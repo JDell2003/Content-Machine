@@ -1,0 +1,42 @@
+# ---- secrets: NEVER commit ----
+# NB: no trailing inline comments on pattern lines - git treats them as part of
+# the pattern, which silently un-ignores the file.
+.env
+postiz/.env
+*.env.local
+# URL.txt contains the login PIN
+URL.txt
+# feedback.jsonl carries transcript excerpts from private video
+feedback.jsonl
+performance.jsonl
+
+# ---- data: private source video, transcripts, rendered clips ----
+data/
+postiz/data/
+
+# ---- third-party clones ----
+vendor/
+
+# ---- python ----
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# ---- media / scratch ----
+*.mp4
+*.mov
+*.mkv
+*.wav
+*.srt
+*.jpg
+*.png
+*.log
+
+# ---- os / editor ----
+Thumbs.db
+desktop.ini
+.DS_Store
+.idea/
+.vscode/

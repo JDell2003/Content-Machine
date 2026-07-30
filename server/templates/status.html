@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}Jobs — Content Machine{% endblock %}
+{% block n2 %}on{% endblock %}
+{% block body %}
+<div class="card">
+  <h1>Jobs</h1>
+  <p class="muted">One video at a time. Live — no need to refresh.</p>
+</div>
+<div class="card" id="netcard">
+  <h2>This machine</h2>
+  <div id="net" class="muted">checking…</div>
+</div>
+<div id="list"></div>
+
+<script>
+const human = (b) => b < 1048576 ? (b/1024).toFixed(0)+" KB"
+  : b < 1073741824 ? (b/1048576).toFixed(1)+" MB" : (b/1073741824).toFixed(2)+" GB";
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function ago(ts) {
+  if (!ts) return "";
+  const s = (Date.now()/1000) - ts;
+  if (s < 60) return Math.round(s)+"s ago";
+  if (s < 3600) return Math.round(s/60)+"m ago";
+  return (s/3600).toFixed(1)+"h ago";
+}
+
+function card(j) {
+  const pct = Math.round((j.progress || 0) * 100);
+  const clips = (j.clips || []).length;
+  const reviewLink = clips ? `<a href="/review/${j.id}">Review ${clips} clip${clips===1?"":"s"} →</a>` : "";
+  return `<div class="card">
+    <div class="row" style="align-items:center">
+      <div style="flex:3;min-width:0">
+        <b style="word-break:break-all">${esc(j.original_name)}</b>
+        <div class="muted">${human(j.size_bytes||0)}${j.duration_s ? " · "+(j.duration_s/60).toFixed(1)+" min" : ""} · ${ago(j.created_at)}</div>
+      </div>
+      <div style="flex:1;text-align:right"><span class="pill ${j.status}">${j.status}</span></div>
+    </div>
+    <div class="bar"><i style="width:${pct}%"></i></div>
+    <div class="muted">${pct}% — ${esc(j.stage)}: ${esc(j.message)}</div>
+    ${j.error ? `<pre>${esc(j.error)}</pre>` : ""}
+    <div style="margin-top:8px">${reviewLink}</div>
+    ${j.status === "queued" ? `<div style="height:8px"></div><button class="ghost" onclick="cancel('${j.id}')">Cancel</button>` : ""}
+  </div>`;
+}
+
+async function cancel(id) {
+  await fetch(`/api/jobs/${id}/cancel`, { method: "POST" });
+  tick();
+}
+
+async function tick() {
+  try {
+    const r = await fetch("/api/jobs");
+    if (r.status === 401) { location.href = "/login"; return; }
+    const { jobs } = await r.json();
+    document.getElementById("list").innerHTML = jobs.length
+      ? jobs.map(card).join("")
+      : `<div class="card"><p class="muted">Nothing here yet. <a href="/">Send a video →</a></p></div>`;
+  } catch (e) { /* keep polling through a blip */ }
+}
+// Show the bookmark URL. If DHCP moved the PC, the address you're reading here
+// won't match the one in your address bar — that's the signal to re-bookmark.
+async function netInfo() {
+  try {
+    const r = await fetch("/api/net");
+    if (!r.ok) return;
+    const n = await r.json();
+    const here = location.host;
+    const expected = n.lan_ip ? `${n.lan_ip}:${n.port}` : "";
+    const drifted = expected && here !== expected && !here.startsWith("localhost") && !here.startsWith("127.");
+    document.getElementById("net").innerHTML =
+      `<div class="kv"><span>Bookmark this</span><b style="text-align:right">${esc(n.primary || "no LAN address")}</b></div>` +
+      `<div class="kv"><span>PC name</span><span>${esc(n.hostname)}</span></div>` +
+      `<div class="kv"><span>mDNS (bonus)</span><span>${esc(n.mdns.name)}${n.mdns.resolves_locally ? "" : " — not resolving"}</span></div>` +
+      (drifted ? `<div class="kv" style="color:var(--warn)"><span>Heads up</span>
+         <span style="text-align:right">This PC's address is now <b>${esc(expected)}</b> —
+         update your bookmark.</span></div>` : "");
+  } catch (e) { /* non-fatal */ }
+}
+netInfo();
+tick();
+setInterval(tick, 2000);
+setInterval(netInfo, 30000);
+</script>
+{% endblock %}

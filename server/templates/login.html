@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Unlock — Content Machine{% endblock %}
+{% block body %}
+<div class="card">
+  <h1>Locked</h1>
+  <p class="muted">Enter your PIN. Second lock on top of the firewall, which only
+    lets this subnet in at all.</p>
+  {% if bad %}<p style="color:var(--bad);font-weight:700">Wrong PIN.</p>{% endif %}
+  <form method="post" action="/login">
+    <input type="password" name="pin" inputmode="numeric" autocomplete="off"
+           pattern="[0-9]*" placeholder="PIN" autofocus required>
+    <div style="height:10px"></div>
+    <button type="submit">Unlock</button>
+  </form>
+</div>
+{% endblock %}

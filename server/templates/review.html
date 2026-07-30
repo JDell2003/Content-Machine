@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% block title %}Review — Content Machine{% endblock %}
+{% block n3 %}on{% endblock %}
+{% block body %}
+{% if job %}
+<div class="card">
+  <h1>Review</h1>
+  <p class="muted" style="word-break:break-all">{{ job.original_name }}</p>
+  <div class="muted" id="counts"></div>
+</div>
+<div id="clips"></div>
+<script>const JOB_ID = {{ job.id | tojson }};</script>
+{% else %}
+<div class="card">
+  <h1>Review</h1>
+  <p class="muted">Pick a finished job.</p>
+</div>
+<div id="joblist"></div>
+<script>const JOB_ID = null;</script>
+{% endif %}
+
+<script>
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function clipCard(job, c) {
+  const wide = `/media/${job.id}/${c.id}?variant=wide`;
+  const hasVert = !!c.path_vertical;
+  const verdict = (c.review_verdict || "").toUpperCase();
+  const decision = c.decision || "pending";
+  const chosen = decision === "approved" ? "ok" : decision === "rejected" ? "bad" : "";
+  return `<div class="card" id="clip-${c.id}">
+    <div class="row" style="align-items:center">
+      <div style="flex:3"><b>#${c.rank} · ${esc(c.hook || c.title || "Clip")}</b>
+        <div class="muted">${(c.start_s ?? 0).toFixed(1)}s → ${(c.end_s ?? 0).toFixed(1)}s
+          · ${((c.end_s ?? 0)-(c.start_s ?? 0)).toFixed(0)}s${c.score != null ? " · score "+c.score : ""}</div>
+      </div>
+      <div style="flex:1;text-align:right">
+        ${verdict ? `<span class="pill ${verdict === "PASS" ? "pass":"flag"}">${esc(verdict)}</span>` : ""}
+        ${c.audio_ok === false ? `<div style="margin-top:4px"><span class="pill flag" title="${esc(c.audio_note||"")}">AUDIO</span></div>` : ""}
+        ${c.visual_verdict === "FLAG" ? `<div style="margin-top:4px"><span class="pill flag" title="${esc(c.visual_note||"")}">VISUAL</span></div>` : ""}
+      </div>
+    </div>
+    ${c.audio_ok === false ? `<div class="kv"><span class="muted">Audio</span><span style="text-align:right;color:var(--warn)">${esc(c.audio_note)}</span></div>` : ""}
+    ${c.profile ? `<div class="kv"><span class="muted">Profile</span><span>${esc(c.profile)}${c.profile_tag && c.profile_tag !== c.profile ? " · "+esc(c.profile_tag) : ""}${c.structure ? " · "+esc(c.structure) : ""}</span></div>` : ""}
+    ${c.why ? `<div class="kv"><span class="muted">Ranked because</span><span style="text-align:right">${esc(c.why)}</span></div>` : ""}
+
+    <div style="height:10px"></div>
+    <video controls preload="metadata" playsinline src="${wide}"></video>
+    ${hasVert ? `<div style="height:8px"></div>
+      <details><summary class="muted">9:16 face-tracked version</summary>
+        <div style="height:8px"></div>
+        <video controls preload="none" playsinline src="/media/${job.id}/${c.id}?variant=vertical"></video>
+      </details>` : `<div class="muted" style="margin-top:6px">No 9:16 variant (no faces detected)</div>`}
+
+    ${c.review_reason ? `<div class="kv"><span class="muted">Reviewer</span><span style="text-align:right">${esc(c.review_reason)}</span></div>` : ""}
+
+    <div style="height:10px"></div>
+    <div class="muted">Caption</div>
+    <div style="white-space:pre-wrap">${esc(c.caption || "—")}</div>
+    <div style="margin-top:8px">${(c.hashtags || []).map(h => `<span class="tag">${esc(h)}</span>`).join("")}</div>
+    ${c.caption ? `<div style="height:8px"></div><button class="ghost" onclick="copyCap('${c.id}')">Copy caption + tags</button>` : ""}
+
+    <div style="height:12px"></div>
+    <div class="row">
+      <button class="${chosen === "ok" ? "ok" : "ghost"}" onclick="decide('${c.id}','approved')">
+        ${decision === "approved" ? "✓ Approved" : "Approve"}</button>
+      <button class="${chosen === "bad" ? "bad" : "ghost"}" onclick="decide('${c.id}','rejected')">
+        ${decision === "rejected" ? "✕ Rejected" : "Reject"}</button>
+    </div>
+    <div id="reason-${c.id}"></div>
+    ${decision === "rejected" && c.reject_reason ? `<div class="muted" style="margin-top:6px">logged: ${esc(c.reject_reason)}${c.reject_note ? " — "+esc(c.reject_note) : ""}</div>` : ""}
+    ${decision === "approved" ? `<div style="height:8px"></div>
+      <a class="btn" style="display:flex;align-items:center;justify-content:center;text-decoration:none"
+         href="/download/${job.id}/${c.id}?variant=wide" download>Download 16:9</a>
+      ${hasVert ? `<div style="height:8px"></div>
+      <a class="btn ghost" style="display:flex;align-items:center;justify-content:center;text-decoration:none"
+         href="/download/${job.id}/${c.id}?variant=vertical" download>Download 9:16</a>` : ""}` : ""}
+    <textarea id="cap-${c.id}" style="position:absolute;left:-9999px">${esc((c.caption||"") + "\n\n" + (c.hashtags||[]).join(" "))}</textarea>
+  </div>`;
+}
+
+function copyCap(id) {
+  const el = document.getElementById("cap-" + id);
+  el.select(); document.execCommand("copy");
+  if (navigator.clipboard) navigator.clipboard.writeText(el.value).catch(()=>{});
+}
+
+// Rejecting requires a reason — that's the only signal `tune` learns taste from,
+// so the UI won't let it through without one.
+const REASONS = [["bad_cut","Bad cut"],["boring","Boring"],["wrong_profile","Wrong profile"],
+                 ["bad_caption","Bad caption"],["other","Other…"]];
+
+function askReason(clipId) {
+  const host = document.getElementById("reason-" + clipId);
+  if (!host) return;
+  host.innerHTML = `<div class="muted" style="margin:10px 0 6px">Why? (one tap)</div>` +
+    REASONS.map(([k, label]) =>
+      `<button class="ghost" style="margin-bottom:6px" onclick="sendReject('${clipId}','${k}')">${label}</button>`
+    ).join("") +
+    `<button class="ghost" onclick="document.getElementById('reason-${clipId}').innerHTML=''">Cancel</button>`;
+}
+
+async function sendReject(clipId, reason) {
+  let note = "";
+  if (reason === "other") {
+    note = prompt("What was wrong with it?") || "";
+    if (!note.trim()) return;
+  }
+  await post(clipId, { verdict: "rejected", reason, note });
+}
+
+async function decide(clipId, verdict) {
+  if (verdict === "rejected") { askReason(clipId); return; }
+  await post(clipId, { verdict });
+}
+
+async function post(clipId, body) {
+  const r = await fetch(`/api/clips/${JOB_ID}/${clipId}/decision`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  if (r.status === 401) { location.href = "/login"; return; }
+  if (!r.ok) { alert((await r.text()).slice(0, 200)); return; }
+  await load();
+}
+
+async function load() {
+  if (!JOB_ID) {
+    const r = await fetch("/api/jobs");
+    if (r.status === 401) { location.href = "/login"; return; }
+    const { jobs } = await r.json();
+    const withClips = jobs.filter(j => (j.clips || []).length);
+    document.getElementById("joblist").innerHTML = withClips.length
+      ? withClips.map(j => `<div class="card"><b style="word-break:break-all">${esc(j.original_name)}</b>
+          <div class="muted">${(j.clips||[]).length} clips · ${j.status}</div>
+          <div style="height:10px"></div>
+          <a class="btn" style="display:flex;align-items:center;justify-content:center;text-decoration:none"
+             href="/review/${j.id}">Open</a></div>`).join("")
+      : `<div class="card"><p class="muted">No clips yet. <a href="/status">Check jobs →</a></p></div>`;
+    return;
+  }
+  const r = await fetch(`/api/jobs/${JOB_ID}`);
+  if (r.status === 401) { location.href = "/login"; return; }
+  const job = await r.json();
+  const clips = job.clips || [];
+  const ok = clips.filter(c => c.decision === "approved").length;
+  document.getElementById("counts").textContent =
+    `${clips.length} clips · ${ok} approved · ${job.stage}: ${job.message}`;
+  document.getElementById("clips").innerHTML = clips.length
+    ? clips.map(c => clipCard(job, c)).join("")
+    : `<div class="card"><p class="muted">No clips on this job yet.</p></div>`;
+}
+load();
+</script>
+{% endblock %}

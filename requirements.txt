@@ -1,0 +1,13 @@
+﻿# Stage 0 (server)
+fastapi
+uvicorn[standard]
+python-multipart
+jinja2
+itsdangerous
+aiofiles
+python-dotenv
+
+# Stage 1 (transcribe + clip)
+faster-whisper
+opencv-python-headless
+numpy
