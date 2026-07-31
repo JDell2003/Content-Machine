@@ -9,6 +9,12 @@
   <div class="muted" id="counts"></div>
 </div>
 <div class="card">
+  <details ontoggle="if(this.open)loadTune()">
+    <summary class="muted">Taste — what the machine has learned from your rejections</summary>
+    <div id="tunebox" class="muted" style="margin-top:10px">loading…</div>
+  </details>
+</div>
+<div class="card">
   <details>
     <summary class="muted">Spelling dictionary — fixes every clip, forever</summary>
     <p class="muted" style="margin-top:10px">Whisper mishears the same words the same
@@ -118,6 +124,42 @@ function clipCard(job, c) {
          href="/download/${job.id}/${c.id}?variant=vertical" download>Download 9:16</a>` : ""}` : ""}
     <textarea id="cap-${c.id}" style="position:absolute;left:-9999px">${esc((c.caption||"") + "\n\n" + (c.hashtags||[]).join(" "))}</textarea>
   </div>`;
+}
+
+// --- tune ----------------------------------------------------------------
+// Rejections are the only input. The readout exists so it's obvious that
+// reviewing honestly is what makes the next run better.
+async function loadTune() {
+  const host = document.getElementById("tunebox");
+  const r = await fetch("/api/tune");
+  if (!r.ok) { host.textContent = "unavailable"; return; }
+  const t = await r.json();
+  const rows = (label, pairs) => pairs.length
+    ? `<div class="kv"><span>${label}</span><span style="text-align:right">${
+        pairs.map(([k, v]) => `${esc(k)} ×${v}`).join(" · ")}</span></div>` : "";
+  host.innerHTML = `
+    <div class="kv"><span>Rejections logged</span><b style="text-align:right">${t.rejections}</b></div>
+    ${rows("By reason", t.by_reason)}
+    ${rows("By profile", t.by_profile)}
+    ${rows("By structure", t.by_structure)}
+    ${t.posts_tracked ? `<div class="kv"><span>Posts tracked</span><b style="text-align:right">${t.posts_tracked}</b></div>` : ""}
+    <div style="height:10px"></div>
+    ${t.ready
+      ? `<button class="ghost" id="tbtn" onclick="runTune()">Learn from these ${t.rejections} rejections</button>`
+      : `<div style="color:var(--warn)">${t.needed} more rejection${t.needed === 1 ? "" : "s"} before
+           the patterns mean anything. Reject with a reason as you review — that's the input.</div>`}
+    ${t.tuned_at ? `<div class="muted" style="margin-top:8px">TUNING.md is active and is being injected into every ranking run.</div>` : ""}`;
+}
+
+async function runTune() {
+  const b = document.getElementById("tbtn");
+  b.disabled = true; b.textContent = "Thinking… (one call)";
+  const r = await fetch("/api/tune", { method: "POST",
+    headers: { "Content-Type": "application/json" }, body: "{}" });
+  const out = await r.json();
+  alert(out.ok ? `Wrote ${out.count} amendments (confidence: ${out.confidence}). They apply to the next run.`
+               : (out.reason || "nothing to learn yet"));
+  loadTune();
 }
 
 // --- spelling dictionary -------------------------------------------------

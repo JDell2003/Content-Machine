@@ -38,7 +38,8 @@ def load_exemplars(path: Path, limit_chars: int = 3000) -> str:
 
 
 def rank_prompt(*, profile: str, raw_addon: bool, shared: str, profile_block: str,
-                exemplars: str, candidates: list[dict], batch_i: int, batch_n: int) -> str:
+                exemplars: str, candidates: list[dict], batch_i: int, batch_n: int,
+                tuning: str = "") -> str:
     lines = [
         f"You are ranking candidate short-form clips from one long recording for the "
         f"{profile} profile. This is batch {batch_i} of {batch_n}.",
@@ -53,6 +54,11 @@ def rank_prompt(*, profile: str, raw_addon: bool, shared: str, profile_block: st
                   "with \"profile_tag\":\"RAW\". Everything else gets the main profile tag.", ""]
     if exemplars:
         lines += ["== PATTERNS JASON LOVES (weight these heavily) ==", exemplars, ""]
+    # Learned from real rejections. Placed AFTER the hand-written rubric so it
+    # reads as an amendment to it, never a replacement for it.
+    if tuning:
+        lines += ["== LEARNED FROM PAST REJECTIONS (amends the rules above) ==",
+                  tuning, ""]
 
     lines += [
         "== CANDIDATES ==",

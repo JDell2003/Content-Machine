@@ -271,6 +271,21 @@ def _clip_file(clip: dict, variant: str) -> Path:
     return p
 
 
+# ---------------------------------------------------------------------- tune
+@app.get("/api/tune")
+async def tune_signal():
+    from pipeline import tune as _t  # noqa: PLC0415
+    return _t.signal()
+
+
+@app.post("/api/tune")
+async def tune_run(body: dict = Body(default={})):
+    """One brain call. Refuses on thin data unless forced — a confident rubric
+    built from four rejections biases every future run."""
+    from pipeline import tune as _t  # noqa: PLC0415
+    return _t.run(force=bool((body or {}).get("force")))
+
+
 # --------------------------------------------------------------- look & sound
 @app.get("/api/look")
 async def look_get():

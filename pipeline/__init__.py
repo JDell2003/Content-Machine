@@ -18,6 +18,7 @@ from typing import Callable
 from . import (audio_fx, audio_gate, brain, color, outro, prompts, render,
                segment, transcribe)
 from . import look as _look
+from . import tune
 
 MAX_RANK_CALLS = 3
 # Clips render in parallel. Measured per clip: ~2s pre-cut + ~6s loudness
@@ -166,7 +167,8 @@ def run_pipeline(*, job: dict, info: dict, report: Callable[..., None], cfg) -> 
             prompt = prompts.rank_prompt(
                 profile=profile, raw_addon=raw_addon, shared=fw["SHARED"],
                 profile_block=fw.get(profile, ""), exemplars=exemplars,
-                candidates=batch, batch_i=i, batch_n=len(batches))
+                candidates=batch, batch_i=i, batch_n=len(batches),
+                tuning=tune.load())
             try:
                 res = brain.ask_json(prompt, label=f"rank:{profile}:{i}/{len(batches)}",
                                      model=cfg.RANK_MODEL, mode=cfg.BRAIN_MODE,
