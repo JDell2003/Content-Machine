@@ -9,6 +9,15 @@
   <div class="muted" id="counts"></div>
 </div>
 <div class="card">
+  <details ontoggle="if(this.open)loadLook()">
+    <summary class="muted"><b>Look &amp; sound</b> — see it on your own footage, then apply</summary>
+    <p class="muted" style="margin-top:10px">The preview comes from the raw recording,
+      not the finished clip, so what you see is the grade on its own — not stacked on
+      the one already applied. Nothing changes until you press Apply.</p>
+    <div id="lookbox" class="muted">loading…</div>
+  </details>
+</div>
+<div class="card">
   <details ontoggle="if(this.open)loadTune()">
     <summary class="muted">Taste — what the machine has learned from your rejections</summary>
     <div id="tunebox" class="muted" style="margin-top:10px">loading…</div>
@@ -124,6 +133,142 @@ function clipCard(job, c) {
          href="/download/${job.id}/${c.id}?variant=vertical" download>Download 9:16</a>` : ""}` : ""}
     <textarea id="cap-${c.id}" style="position:absolute;left:-9999px">${esc((c.caption||"") + "\n\n" + (c.hashtags||[]).join(" "))}</textarea>
   </div>`;
+}
+
+// --- look & sound --------------------------------------------------------
+// Judged on a still from YOUR footage before anything is committed. The old
+// design guessed a preset before ranking, which meant a wrong guess produced
+// sixty subtly-wrong clips at once.
+let LOOK = null, LOOKCLIP = null, PREVT = null;
+
+async function loadLook() {
+  const host = document.getElementById("lookbox");
+  if (!JOB_ID) { host.textContent = "Open a job to use this."; return; }
+  const [lr, pr, jr] = await Promise.all([
+    fetch("/api/look"), fetch(`/api/jobs/${JOB_ID}/relook`), fetch(`/api/jobs/${JOB_ID}`)]);
+  if (!lr.ok) { host.textContent = "unavailable"; return; }
+  LOOK = await lr.json();
+  const plan = pr.ok ? await pr.json() : { clips: 0, lossless: false, note: "" };
+  const job = jr.ok ? await jr.json() : { clips: [] };
+  const clips = (job.clips || []).filter(c => c.path);
+  if (!clips.length) { host.textContent = "No rendered clips yet."; return; }
+  LOOKCLIP = LOOKCLIP || clips[0].id;
+
+  const opts = (o, cur) => Object.entries(o).map(([k, l]) =>
+    `<option value="${k}"${k === cur ? " selected" : ""}>${esc(l)}</option>`).join("");
+
+  host.innerHTML = `
+    <div class="muted" style="margin-bottom:6px">Preview using clip</div>
+    <select id="lkclip" style="width:100%" onchange="LOOKCLIP=this.value;refreshPreview()">
+      ${clips.map(c => `<option value="${c.id}"${c.id === LOOKCLIP ? " selected" : ""}>
+         #${c.rank} ${esc((c.hook || c.id).slice(0, 46))}</option>`).join("")}
+    </select>
+    <div style="height:10px"></div>
+    <img id="lkimg" style="width:100%;border-radius:12px;background:#000;display:block" alt="preview">
+    <div class="muted" id="lkstat" style="margin-top:4px">&nbsp;</div>
+
+    <div style="font-weight:700;margin:12px 0 4px">Colour</div>
+    <select id="cpreset" style="width:100%" onchange="refreshPreview()">${opts(LOOK.color_presets, LOOK.color_preset)}</select>
+    <label style="display:block;margin-top:8px">Strength <b id="clab">${Math.round(LOOK.color_intensity * 100)}%</b>
+      <input type="range" min="0" max="150" value="${Math.round(LOOK.color_intensity * 100)}" style="width:100%" id="cint"
+             oninput="document.getElementById('clab').textContent=this.value+'%'" onchange="refreshPreview()"></label>
+
+    <div style="font-weight:700;margin:14px 0 4px">Voice</div>
+    <select id="apreset" style="width:100%" onchange="clearAudio()">${opts(LOOK.audio_presets, LOOK.audio_preset)}</select>
+    <label style="display:block;margin-top:8px">Strength <b id="alab">${Math.round(LOOK.audio_intensity * 100)}%</b>
+      <input type="range" min="0" max="150" value="${Math.round(LOOK.audio_intensity * 100)}" style="width:100%" id="aint"
+             oninput="document.getElementById('alab').textContent=this.value+'%'" onchange="clearAudio()"></label>
+    <button class="ghost" style="margin-top:8px" onclick="previewAudio()" id="abtn">Hear 12s with this voice setting</button>
+    <div id="aprev" style="margin-top:8px"></div>
+    <div class="muted" style="margin-top:6px;font-size:13px">Metallic or warbly? That's the
+      noise remover working too hard — turn Voice <b>down</b>. <b>Level only</b> disables it entirely.</div>
+
+    <div style="height:14px"></div>
+    <div class="muted" style="${plan.lossless ? "" : "color:var(--warn)"}">${esc(plan.note)}</div>
+    <div style="height:10px"></div>
+    <button class="ghost" onclick="applyLook('clip')" id="lk1">Apply to this clip only (~45s)</button>
+    <div style="height:6px"></div>
+    <button class="ghost" onclick="applyLook('job')" id="lkall">Apply to all ${plan.clips} clips (~${plan.eta_minutes} min)</button>
+    <div id="lkprog" class="muted" style="margin-top:8px"></div>`;
+  refreshPreview();
+  pollRelook();
+}
+
+// Debounced: dragging a slider would otherwise fire an ffmpeg call per pixel.
+function refreshPreview() {
+  clearTimeout(PREVT);
+  document.getElementById("lkstat").textContent = "rendering preview…";
+  PREVT = setTimeout(() => {
+    const p = document.getElementById("cpreset").value;
+    const i = +document.getElementById("cint").value / 100;
+    const img = document.getElementById("lkimg");
+    img.onload = () => { document.getElementById("lkstat").textContent =
+      i === 0 ? "no grade — this is the raw footage" : `${p} @ ${Math.round(i * 100)}%`; };
+    img.onerror = () => { document.getElementById("lkstat").textContent = "preview failed"; };
+    img.src = `/api/preview/frame?job_id=${JOB_ID}&clip_id=${encodeURIComponent(LOOKCLIP)}`
+            + `&preset=${p}&intensity=${i}&width=720&_=${Date.now()}`;
+  }, 250);
+}
+
+function clearAudio() { document.getElementById("aprev").innerHTML = ""; }
+
+async function previewAudio() {
+  const b = document.getElementById("abtn");
+  b.disabled = true; b.textContent = "Rendering 12s…";
+  const p = document.getElementById("apreset").value;
+  const i = +document.getElementById("aint").value / 100;
+  document.getElementById("aprev").innerHTML =
+    `<audio controls autoplay style="width:100%" src="/api/preview/audio?job_id=${JOB_ID}`
+    + `&clip_id=${encodeURIComponent(LOOKCLIP)}&preset=${p}&intensity=${i}&_=${Date.now()}"></audio>`;
+  b.disabled = false; b.textContent = "Hear 12s with this voice setting";
+}
+
+async function applyLook(scope) {
+  const n = scope === "job" ? "every clip in this job" : "this clip";
+  if (!confirm(`Re-render ${n} with these settings?`)) return;
+  const body = {
+    scope, clip_id: LOOKCLIP, save_default: true,
+    color_preset: document.getElementById("cpreset").value,
+    color_intensity: +document.getElementById("cint").value / 100,
+    audio_preset: document.getElementById("apreset").value,
+    audio_intensity: +document.getElementById("aint").value / 100,
+  };
+  const btn = document.getElementById(scope === "job" ? "lkall" : "lk1");
+  btn.disabled = true; btn.textContent = "Working…";
+  const r = await fetch(`/api/jobs/${JOB_ID}/relook`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body) });
+  if (r.status === 401) { location.href = "/login"; return; }
+  if (!r.ok) { alert((await r.text()).slice(0, 250)); btn.disabled = false; return; }
+  if (scope === "job") { pollRelook(); }
+  else { btn.disabled = false; btn.textContent = "Apply to this clip only (~45s)"; await load(); }
+}
+
+// Runs server-side on its own thread, so closing the tab doesn't stop it.
+async function pollRelook() {
+  const box = document.getElementById("lkprog");
+  if (!box) return;
+  const r = await fetch(`/api/jobs/${JOB_ID}/relook`);
+  if (!r.ok) return;
+  const { running } = await r.json();
+  if (!running) { box.textContent = ""; return; }
+  if (running.done) {
+    box.innerHTML = `<span style="color:var(--ok)">Done — ${running.done_count}/${running.total} re-rendered${
+      running.errors ? `, ${running.errors} failed` : ""}.</span>`;
+    const b = document.getElementById("lkall");
+    if (b) { b.disabled = false; b.textContent = "Apply to all clips"; }
+    load();
+    return;
+  }
+  box.innerHTML = `Re-rendering ${running.done_count}/${running.total} —
+    <span class="muted">${esc((running.current || "").slice(0, 40))}</span>
+    <button class="ghost" style="margin-top:6px" onclick="cancelRelook()">Stop</button>`;
+  setTimeout(pollRelook, 3000);
+}
+
+async function cancelRelook() {
+  await fetch(`/api/jobs/${JOB_ID}/relook`, { method: "DELETE" });
+  pollRelook();
 }
 
 // --- tune ----------------------------------------------------------------

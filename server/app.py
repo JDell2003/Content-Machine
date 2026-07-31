@@ -271,6 +271,113 @@ def _clip_file(clip: dict, variant: str) -> Path:
     return p
 
 
+# -------------------------------------------------------- look preview/apply
+def _preview_src(job: dict, clip: dict) -> tuple[Path, float]:
+    """Preview must come from the UNGRADED original. The finished clip already
+    has a grade baked in, so previewing on it would show two grades stacked."""
+    from pipeline import relook as _rl  # noqa: PLC0415
+    src = _rl.source_for(job)
+    if src is not None:
+        # Middle of the clip — more representative than the first frame, which is
+        # often mid-blink or mid-cut.
+        return src, float(clip["start_s"]) + float(clip["duration_s"]) / 2
+    return Path(clip["path"]), float(clip.get("duration_s", 2)) / 2
+
+
+@app.get("/api/preview/frame")
+async def preview_frame(job_id: str, clip_id: str, preset: str = "office",
+                        intensity: float = 1.0, width: int = 720):
+    """One graded still, straight from the source. Fast enough to drag a slider."""
+    from pipeline import color as _c  # noqa: PLC0415
+    job = jobs.load(job_id)
+    if not job:
+        raise HTTPException(404, "no such job")
+    clip = _find_clip(job, clip_id)
+    src, at = _preview_src(job, clip)
+
+    vf = [f"scale={max(240, min(1280, int(width)))}:-2"]
+    chain = _c.filter_chain(preset, float(intensity))
+    if chain:
+        vf.append(chain)
+    dest = config.DATA / "tmp" / f"prev_{job_id}_{clip_id}_{preset}_{intensity}.jpg"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    args = [shutil.which("ffmpeg") or "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-ss", f"{at:.3f}", "-i", str(src), "-frames:v", "1",
+            "-vf", ",".join(vf), "-q:v", "3", str(dest)]
+    p = subprocess.run(args, capture_output=True, text=True, timeout=180)
+    if p.returncode != 0 or not dest.exists():
+        raise HTTPException(500, f"preview failed: {(p.stderr or '')[-200:]}")
+    return FileResponse(dest, media_type="image/jpeg",
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/preview/audio")
+async def preview_audio(job_id: str, clip_id: str, preset: str = "office",
+                        intensity: float = 1.0, seconds: int = 12):
+    """A short audio sample with the voice chain applied, from the raw source."""
+    from pipeline import audio_fx as _a  # noqa: PLC0415
+    job = jobs.load(job_id)
+    if not job:
+        raise HTTPException(404, "no such job")
+    clip = _find_clip(job, clip_id)
+    src, at = _preview_src(job, clip)
+    dur = max(4, min(30, int(seconds)))
+    at = max(0.0, at - dur / 2)
+
+    chain, _ = _a.build_chain(src, at, dur, preset=preset, intensity=float(intensity))
+    dest = config.DATA / "tmp" / f"prevaud_{job_id}_{clip_id}_{preset}_{intensity}.m4a"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    args = [shutil.which("ffmpeg") or "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-ss", f"{at:.3f}", "-i", str(src), "-t", f"{dur}", "-map", "0:a:0", "-vn",
+            "-af", chain, "-c:a", "aac", "-b:a", "160k", str(dest)]
+    p = subprocess.run(args, capture_output=True, text=True, timeout=600)
+    if p.returncode != 0 or not dest.exists():
+        raise HTTPException(500, f"audio preview failed: {(p.stderr or '')[-200:]}")
+    return FileResponse(dest, media_type="audio/mp4",
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/jobs/{job_id}/relook")
+async def relook_plan(job_id: str):
+    from pipeline import relook as _rl  # noqa: PLC0415
+    job = jobs.load(job_id)
+    if not job:
+        raise HTTPException(404, "no such job")
+    return {**_rl.plan(job), "running": _rl.status(job_id)}
+
+
+@app.post("/api/jobs/{job_id}/relook")
+async def relook_apply(job_id: str, body: dict = Body(...)):
+    """Apply a look to one clip or the whole job. Whole-job runs in the
+    background and writes progress into the job as each clip lands."""
+    from pipeline import look as _l, relook as _rl  # noqa: PLC0415
+    job = jobs.load(job_id)
+    if not job:
+        raise HTTPException(404, "no such job")
+
+    look = {**_l.load(), **{k: v for k, v in (body or {}).items()
+                            if k in _l.KEYS and v is not None}}
+    if body.get("save_default"):
+        _l.save(look)
+
+    if body.get("scope") == "job":
+        return _rl.run_all(job_id, look, jobs.load, jobs.update)
+
+    clip = _find_clip(job, str(body.get("clip_id") or ""))
+    _rl.one(job, clip, look)
+    jobs.update(job_id, clips=job["clips"])
+    if clip.get("relook_error"):
+        raise HTTPException(500, clip["relook_error"])
+    return {"ok": True, "clip": clip.get("id"), "grade": clip.get("grade"),
+            "audio_fx": clip.get("audio_fx")}
+
+
+@app.delete("/api/jobs/{job_id}/relook")
+async def relook_cancel(job_id: str):
+    from pipeline import relook as _rl  # noqa: PLC0415
+    return {"cancelled": _rl.cancel(job_id)}
+
+
 # ---------------------------------------------------------------------- tune
 @app.get("/api/tune")
 async def tune_signal():
