@@ -380,6 +380,94 @@ async def relook_cancel(job_id: str):
     return {"cancelled": _rl.cancel(job_id)}
 
 
+# ------------------------------------------------------------------ schedule
+@app.get("/api/schedule")
+async def schedule_get():
+    from pipeline import schedule as _s  # noqa: PLC0415
+    return _s.build(jobs.all_jobs())
+
+
+@app.post("/api/schedule")
+async def schedule_set(body: dict = Body(...)):
+    from pipeline import schedule as _s  # noqa: PLC0415
+    _s.save(body or {})
+    return _s.build(jobs.all_jobs())
+
+
+@app.post("/api/schedule/posted")
+async def schedule_mark_posted(body: dict = Body(...)):
+    """Mark a clip as actually posted so it leaves the queue and the ones behind
+    it move up. Nothing here publishes — this only records what you did."""
+    job = jobs.load(str(body.get("job_id") or ""))
+    if not job:
+        raise HTTPException(404, "no such job")
+    clip = _find_clip(job, str(body.get("clip_id") or ""))
+    clip["posted"] = bool(body.get("posted", True))
+    clip["posted_at"] = time.time() if clip["posted"] else None
+    jobs.update(job["id"], clips=job["clips"])
+    from pipeline import schedule as _s  # noqa: PLC0415
+    return _s.build(jobs.all_jobs())
+
+
+@app.get("/swipe", response_class=HTMLResponse)
+async def swipe_page(request: Request):
+    return TEMPLATES.TemplateResponse(request, "swipe.html", {})
+
+
+@app.get("/api/swipe/queue")
+async def swipe_queue(limit: int = 40):
+    """Undecided clips across every job, best first — the deck to swipe through."""
+    deck = []
+    for job in jobs.all_jobs():
+        for clip in job.get("clips", []):
+            if clip.get("decision") not in (None, "", "pending") or not clip.get("path"):
+                continue
+            deck.append({
+                "job_id": job.get("id"), "id": clip.get("id"),
+                "rank": clip.get("rank"), "score": clip.get("score"),
+                "hook": clip.get("hook"), "caption": clip.get("caption"),
+                "hashtags": clip.get("hashtags") or [],
+                "duration_s": clip.get("duration_s"),
+                "start_s": clip.get("start_s"),
+                "profile": clip.get("profile"), "topic": clip.get("topic"),
+                "structure": clip.get("structure"),
+                "why": clip.get("why"), "review_verdict": clip.get("review_verdict"),
+                "review_reason": clip.get("review_reason"),
+                "audio_ok": clip.get("audio_ok"), "audio_note": clip.get("audio_note"),
+                "source_name": job.get("original_name"),
+            })
+    # Deliberately NOT score order. Clips are cut from one long recording, so the
+    # highest scorers cluster in whichever stretch was strongest — you'd swipe
+    # through ten takes on the same idea in a row, approve a few, and they'd all
+    # go out the same week saying the same thing.
+    #
+    # Shuffling alone doesn't fix it either: random still deals same-topic cards
+    # back to back often enough to notice. So shuffle, then de-cluster — walk the
+    # deck and push a card back if it repeats the topic or the 5-minute stretch of
+    # source the one before it came from.
+    import random  # noqa: PLC0415
+    random.shuffle(deck)
+
+    def _key(c: dict) -> tuple:
+        return ((c.get("topic") or c.get("structure") or "?"),
+                int((c.get("start_s") or 0) // 300))
+
+    spread: list[dict] = []
+    held: list[dict] = []
+    while deck or held:
+        pool = deck or held
+        if pool is held:
+            deck, held = held, []
+            pool = deck
+        c = pool.pop(0)
+        if spread and _key(c) == _key(spread[-1]) and (deck or held):
+            held.append(c)          # same meat as the last card — try again later
+            continue
+        spread.append(c)
+
+    return {"deck": spread[:max(1, min(200, limit))], "total": len(spread)}
+
+
 # ---------------------------------------------------------------------- tune
 @app.get("/api/tune")
 async def tune_signal():
@@ -703,6 +791,13 @@ async def clip_decision(job_id: str, clip_id: str, payload: dict):
             continue
         clip["decision"] = verdict
         clip["decided_at"] = time.time()
+        # The schedule queues in the order you said yes, so the first approval
+        # timestamp has to survive later edits. Un-approving clears it, which is
+        # what releases the slot and pulls everything behind it forward.
+        if verdict == "approved":
+            clip.setdefault("approved_at", clip["decided_at"])
+        else:
+            clip.pop("approved_at", None)
         if verdict == "rejected":
             clip["reject_reason"] = reason
             clip["reject_note"] = note[:500]

@@ -1,0 +1,302 @@
+{% extends "base.html" %}
+{% block title %}Swipe — Content Machine{% endblock %}
+{% block n5 %}on{% endblock %}
+{% block body %}
+
+<div class="sw-tabs">
+  <button id="tab-deck" class="sw-tab on" onclick="showTab('deck')">Swipe</button>
+  <button id="tab-cal" class="sw-tab" onclick="showTab('cal')">Calendar</button>
+</div>
+
+<!-- ------------------------------------------------------------- swipe deck -->
+<div id="pane-deck">
+  <div class="card" style="padding:12px">
+    <div class="row" style="align-items:center">
+      <div style="flex:1" class="muted" id="deckcount">loading…</div>
+      <button class="ghost" style="width:auto;padding:6px 12px" onclick="openEditor()">Edit this clip</button>
+    </div>
+  </div>
+
+  <div id="stage" class="sw-stage">
+    <div id="empty" class="card" style="display:none">
+      <h2>Deck's empty</h2>
+      <p class="muted">Every clip has a decision. Approve more and they queue up on
+        the calendar, or run another video.</p>
+      <a class="btn" href="/status" style="display:flex;justify-content:center;text-decoration:none">Jobs →</a>
+    </div>
+  </div>
+
+  <div class="sw-actions">
+    <button class="sw-btn bad" onclick="decide('rejected')" title="Reject">✕</button>
+    <button class="sw-btn mid" onclick="skip()" title="Skip for now">↷</button>
+    <button class="sw-btn ok" onclick="decide('approved')" title="Approve">✓</button>
+  </div>
+  <div class="muted" style="text-align:center;margin-top:8px;font-size:13px">
+    Drag the card, or use ← / → . Rejecting asks why — that's what teaches the ranker.
+  </div>
+</div>
+
+<!-- --------------------------------------------------------------- calendar -->
+<div id="pane-cal" style="display:none">
+  <div class="card">
+    <h2>Posting schedule</h2>
+    <p class="muted">Approved clips get a real date, in the order you approved them.
+      Nothing posts by itself — this tells you what goes out when, so volume
+      becomes a drumbeat instead of one big dump.</p>
+    <div id="schedstats" class="muted"></div>
+    <div style="height:12px"></div>
+    <div class="muted" style="font-weight:700;margin-bottom:6px">Times per day</div>
+    <div id="times"></div>
+    <div class="row" style="gap:6px;margin-top:8px">
+      <input id="newtime" type="time" value="12:00" style="flex:1">
+      <button class="ghost" style="width:auto;padding:8px 14px" onclick="addTime()">Add</button>
+    </div>
+    <div class="muted" style="font-weight:700;margin:14px 0 6px">Days</div>
+    <div id="days" class="row" style="gap:4px;flex-wrap:wrap"></div>
+  </div>
+  <div id="cal"></div>
+</div>
+
+<style>
+  .sw-tabs{display:flex;gap:6px;margin-bottom:12px}
+  .sw-tab{flex:1;background:var(--panel2);color:var(--muted);border:1px solid var(--line);
+          border-radius:10px;padding:10px;font-weight:700}
+  .sw-tab.on{background:var(--accent);color:#0b0e14;border-color:var(--accent)}
+  .sw-stage{position:relative;min-height:60vh}
+  .sw-card{position:absolute;inset:0;background:var(--panel);border:1px solid var(--line);
+           border-radius:16px;overflow:hidden;touch-action:pan-y;will-change:transform}
+  .sw-card video{border-radius:0;max-height:62vh;object-fit:contain;background:#000}
+  .sw-meta{padding:12px}
+  .sw-stamp{position:absolute;top:18px;font-size:26px;font-weight:900;padding:6px 14px;
+            border-radius:10px;border:4px solid;opacity:0;pointer-events:none;transform:rotate(-12deg)}
+  .sw-yes{left:18px;color:var(--ok);border-color:var(--ok)}
+  .sw-no{right:18px;color:var(--bad);border-color:var(--bad);transform:rotate(12deg)}
+  .sw-actions{display:flex;gap:14px;justify-content:center;margin-top:14px}
+  .sw-btn{width:64px;height:64px;border-radius:50%;font-size:24px;font-weight:900;
+          border:2px solid var(--line);background:var(--panel2);color:var(--ink);flex:0 0 auto}
+  .sw-btn.ok{color:var(--ok);border-color:var(--ok)}
+  .sw-btn.bad{color:var(--bad);border-color:var(--bad)}
+  .sw-btn.mid{color:var(--muted);font-size:20px}
+  .cal-day{border-top:1px solid var(--line);padding:10px 0}
+  .cal-slot{display:flex;gap:10px;align-items:baseline;padding:6px 0}
+  .cal-time{font-family:monospace;color:var(--accent);min-width:52px}
+</style>
+
+<script>
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let DECK = [], IDX = 0, TOTAL = 0;
+
+function cur() { return DECK[IDX] || null; }
+
+async function loadDeck() {
+  const r = await fetch("/api/swipe/queue");
+  if (r.status === 401) { location.href = "/login"; return; }
+  const d = await r.json();
+  DECK = d.deck; TOTAL = d.total; IDX = 0;
+  render();
+}
+
+function render() {
+  const stage = document.getElementById("stage");
+  const c = cur();
+  document.getElementById("deckcount").textContent =
+    TOTAL ? `${IDX + 1} of ${DECK.length} undecided${TOTAL > DECK.length ? ` (${TOTAL} total)` : ""}` : "";
+  stage.querySelectorAll(".sw-card").forEach(n => n.remove());
+  if (!c) { document.getElementById("empty").style.display = ""; return; }
+  document.getElementById("empty").style.display = "none";
+
+  const el = document.createElement("div");
+  el.className = "sw-card";
+  el.innerHTML = `
+    <div class="sw-stamp sw-yes" id="stamp-yes">KEEP</div>
+    <div class="sw-stamp sw-no" id="stamp-no">NOPE</div>
+    <video id="vid" controls autoplay muted playsinline
+           src="/media/${c.job_id}/${encodeURIComponent(c.id)}?variant=wide"></video>
+    <div class="sw-meta">
+      <b>${esc(c.hook || "Clip")}</b>
+      <div class="muted" style="margin-top:4px">
+        ${c.duration_s ? Math.round(c.duration_s) + "s" : ""}
+        ${c.score != null ? " · score " + c.score : ""}
+        ${c.profile ? " · " + esc(c.profile) : ""}${c.topic ? " · " + esc(c.topic) : ""}
+      </div>
+      ${c.review_verdict === "FLAG" && c.review_reason
+        ? `<div class="muted" style="margin-top:6px;color:var(--warn)">⚑ ${esc(c.review_reason)}</div>` : ""}
+      ${c.audio_ok === false ? `<div class="muted" style="color:var(--warn)">⚑ audio: ${esc(c.audio_note || "")}</div>` : ""}
+      ${c.caption ? `<div style="margin-top:8px;white-space:pre-wrap;font-size:14px">${esc(c.caption)}</div>` : ""}
+    </div>`;
+  stage.appendChild(el);
+  wireDrag(el);
+}
+
+// Drag with pointer events so one code path covers finger and mouse.
+function wireDrag(el) {
+  let x0 = 0, y0 = 0, dx = 0, dragging = false;
+  const yes = () => document.getElementById("stamp-yes");
+  const no = () => document.getElementById("stamp-no");
+
+  el.addEventListener("pointerdown", (e) => {
+    // Let the video's own controls work instead of dragging the card off screen.
+    if (e.target.tagName === "VIDEO") return;
+    dragging = true; x0 = e.clientX; y0 = e.clientY;
+    el.setPointerCapture(e.pointerId);
+  });
+  el.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    dx = e.clientX - x0;
+    const dy = e.clientY - y0;
+    el.style.transform = `translate(${dx}px, ${dy * 0.25}px) rotate(${dx / 22}deg)`;
+    yes().style.opacity = Math.max(0, Math.min(1, dx / 120));
+    no().style.opacity = Math.max(0, Math.min(1, -dx / 120));
+  });
+  const end = () => {
+    if (!dragging) return;
+    dragging = false;
+    if (Math.abs(dx) > 110) { fly(el, dx > 0); decide(dx > 0 ? "approved" : "rejected", true); }
+    else { el.style.transition = "transform .18s"; el.style.transform = "";
+           yes().style.opacity = 0; no().style.opacity = 0;
+           setTimeout(() => { el.style.transition = ""; }, 200); }
+    dx = 0;
+  };
+  el.addEventListener("pointerup", end);
+  el.addEventListener("pointercancel", end);
+}
+
+function fly(el, right) {
+  el.style.transition = "transform .28s ease-out, opacity .28s";
+  el.style.transform = `translate(${right ? 1000 : -1000}px, 0) rotate(${right ? 30 : -30}deg)`;
+  el.style.opacity = "0";
+}
+
+function skip() { IDX = Math.min(IDX + 1, DECK.length); render(); }
+
+const REASONS = [["bad_cut","Bad cut"],["boring","Boring"],["wrong_profile","Wrong profile"],
+                 ["bad_caption","Bad caption"],["other","Other…"]];
+
+async function decide(verdict, alreadyFlew) {
+  const c = cur();
+  if (!c) return;
+  if (verdict === "rejected") {
+    // A rejection with no reason teaches the ranker nothing, so it's required.
+    const pick = await askReason();
+    if (!pick) { if (alreadyFlew) render(); return; }
+    await send(c, { verdict, reason: pick.reason, note: pick.note });
+  } else {
+    if (!alreadyFlew) { const el = document.querySelector(".sw-card"); if (el) fly(el, true); }
+    await send(c, { verdict });
+  }
+  DECK.splice(IDX, 1);
+  if (IDX >= DECK.length) IDX = Math.max(0, DECK.length - 1);
+  setTimeout(render, alreadyFlew ? 180 : 260);
+  loadCal();
+}
+
+function askReason() {
+  return new Promise((resolve) => {
+    const host = document.createElement("div");
+    host.className = "card";
+    host.style.cssText = "position:fixed;left:12px;right:12px;bottom:12px;z-index:50";
+    host.innerHTML = `<div class="muted" style="margin-bottom:8px">Why? (one tap)</div>` +
+      REASONS.map(([k, l]) => `<button class="ghost" data-k="${k}" style="margin-bottom:6px">${l}</button>`).join("") +
+      `<button class="ghost" data-k="">Cancel</button>`;
+    document.body.appendChild(host);
+    host.addEventListener("click", async (e) => {
+      const k = e.target.dataset && e.target.dataset.k;
+      if (k === undefined) return;
+      host.remove();
+      if (!k) return resolve(null);
+      let note = "";
+      if (k === "other") { note = prompt("What was wrong with it?") || ""; if (!note.trim()) return resolve(null); }
+      resolve({ reason: k, note });
+    });
+  });
+}
+
+async function send(c, body) {
+  const r = await fetch(`/api/clips/${c.job_id}/${encodeURIComponent(c.id)}/decision`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (r.status === 401) { location.href = "/login"; return; }
+  if (!r.ok) alert((await r.text()).slice(0, 200));
+}
+
+document.addEventListener("keydown", (e) => {
+  if (document.getElementById("pane-deck").style.display === "none") return;
+  if (e.key === "ArrowRight") decide("approved");
+  if (e.key === "ArrowLeft") decide("rejected");
+});
+
+// The full editor is a separate build. Until it lands this opens the controls
+// that DO exist for this clip today — captions, reframe, look & sound — rather
+// than a dead link.
+function openEditor() {
+  const c = cur();
+  if (!c) return;
+  location.href = `/review/${c.job_id}#clip-${encodeURIComponent(c.id)}`;
+}
+
+// ------------------------------------------------------------------ calendar
+function showTab(which) {
+  const deck = which === "deck";
+  document.getElementById("pane-deck").style.display = deck ? "" : "none";
+  document.getElementById("pane-cal").style.display = deck ? "none" : "";
+  document.getElementById("tab-deck").classList.toggle("on", deck);
+  document.getElementById("tab-cal").classList.toggle("on", !deck);
+  if (!deck) loadCal();
+}
+
+const DAYNAMES = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+let SCHED = null;
+
+async function loadCal() {
+  const r = await fetch("/api/schedule");
+  if (!r.ok) return;
+  SCHED = await r.json();
+  const s = SCHED.settings;
+  document.getElementById("schedstats").innerHTML =
+    `<b>${SCHED.queued}</b> approved and waiting · <b>${SCHED.per_day}/day</b> ·
+     that's <b>${SCHED.days_of_runway} days</b> of runway${SCHED.posted ? ` · ${SCHED.posted} marked posted` : ""}`;
+  document.getElementById("times").innerHTML = s.times.map(t =>
+    `<span class="tag" style="cursor:pointer" onclick="dropTime('${t}')">${t} ✕</span>`).join(" ");
+  document.getElementById("days").innerHTML = DAYNAMES.map((n, i) =>
+    `<button class="${s.days.includes(i) ? "" : "ghost"}" style="flex:1;min-width:56px;padding:8px 0"
+       onclick="toggleDay(${i})">${n}</button>`).join("");
+
+  document.getElementById("cal").innerHTML = SCHED.by_day.length
+    ? SCHED.by_day.map(d => `<div class="card" style="padding:12px">
+        <b>${new Date(d.day + "T00:00").toLocaleDateString(undefined,{weekday:"long",month:"short",day:"numeric"})}</b>
+        ${d.items.map(it => `<div class="cal-slot">
+            <span class="cal-time">${it.scheduled_time}</span>
+            <span style="flex:1">${esc((it.hook || "").slice(0, 70))}
+              <div class="muted" style="font-size:12px">${it.profile || ""}${it.duration_s ? " · " + Math.round(it.duration_s) + "s" : ""}</div></span>
+            <button class="ghost" style="width:auto;padding:4px 10px;font-size:12px"
+              onclick="markPosted('${it.job_id}','${it.clip_id}')">posted</button>
+          </div>`).join("")}
+      </div>`).join("")
+    : `<div class="card"><p class="muted">Nothing approved yet. Swipe right on a few and
+        they'll land here with real dates.</p></div>`;
+}
+
+async function saveSched(patch) {
+  const r = await fetch("/api/schedule", { method: "POST",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+  if (r.ok) { SCHED = await r.json(); loadCal(); }
+}
+function addTime() { const t = document.getElementById("newtime").value;
+  if (t) saveSched({ times: [...SCHED.settings.times, t] }); }
+function dropTime(t) { const left = SCHED.settings.times.filter(x => x !== t);
+  if (!left.length) return alert("Keep at least one time.");
+  saveSched({ times: left }); }
+function toggleDay(i) { const d = SCHED.settings.days.includes(i)
+    ? SCHED.settings.days.filter(x => x !== i) : [...SCHED.settings.days, i];
+  if (!d.length) return alert("Keep at least one day.");
+  saveSched({ days: d }); }
+
+async function markPosted(job_id, clip_id) {
+  await fetch("/api/schedule/posted", { method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ job_id, clip_id, posted: true }) });
+  loadCal();
+}
+
+loadDeck();
+</script>
+{% endblock %}
