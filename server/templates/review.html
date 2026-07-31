@@ -8,6 +8,21 @@
   <p class="muted" style="word-break:break-all">{{ job.original_name }}</p>
   <div class="muted" id="counts"></div>
 </div>
+<div class="card">
+  <details>
+    <summary class="muted">Spelling dictionary — fixes every clip, forever</summary>
+    <p class="muted" style="margin-top:10px">Whisper mishears the same words the same
+      way every time. Fixing one here fixes it on every clip of every future video
+      instead of one line on one clip. Matched whole-word and case-insensitively,
+      so <b>ab → AB</b> will not touch <b>abs</b>.</p>
+    <div id="dict"></div>
+    <div class="row" style="gap:6px;margin-top:8px">
+      <input id="dwrong" placeholder="heard as" style="flex:1">
+      <input id="dright" placeholder="should be" style="flex:1">
+    </div>
+    <button class="ghost" style="margin-top:8px" onclick="addCorrection()">Add</button>
+  </details>
+</div>
 <div id="clips"></div>
 <script>const JOB_ID = {{ job.id | tojson }};</script>
 {% else %}
@@ -41,11 +56,37 @@ function clipCard(job, c) {
       </div>
     </div>
     ${c.audio_ok === false ? `<div class="kv"><span class="muted">Audio</span><span style="text-align:right;color:var(--warn)">${esc(c.audio_note)}</span></div>` : ""}
-    ${c.profile ? `<div class="kv"><span class="muted">Profile</span><span>${esc(c.profile)}${c.profile_tag && c.profile_tag !== c.profile ? " · "+esc(c.profile_tag) : ""}${c.structure ? " · "+esc(c.structure) : ""}</span></div>` : ""}
+    ${c.profile ? `<div class="kv"><span class="muted">Profile</span><span>${esc(c.profile)}${c.profile_tag && c.profile_tag !== c.profile ? " · "+esc(c.profile_tag) : ""}${c.structure ? " · "+esc(c.structure) : ""}${c.topic ? " · "+esc(c.topic) : ""}</span></div>` : ""}
     ${c.why ? `<div class="kv"><span class="muted">Ranked because</span><span style="text-align:right">${esc(c.why)}</span></div>` : ""}
 
     <div style="height:10px"></div>
-    <video controls preload="metadata" playsinline src="${wide}"></video>
+    <div class="frame" id="frame-${c.id}"><video controls preload="metadata" playsinline src="${wide}"></video></div>
+
+    <details style="margin-top:8px" ontoggle="if(this.open)loadCues('${c.id}')">
+      <summary class="muted">Captions — fix wording, size, position${c.captions_edited ? " · edited" : ""}</summary>
+      <div id="cues-${c.id}" class="muted" style="margin-top:10px">loading…</div>
+    </details>
+
+    <details style="margin-top:8px">
+      <summary class="muted">Reframe — crop it tighter</summary>
+      <div style="height:10px"></div>
+      <div class="row" style="gap:6px;flex-wrap:wrap">
+        ${["original","9:16","4:5","1:1","16:9"].map(a =>
+          `<button class="ghost asp" data-clip="${c.id}" data-asp="${a}"
+             style="flex:1;min-width:64px" onclick="setAspect('${c.id}','${a}')">${a}</button>`).join("")}
+      </div>
+      <label class="muted" style="display:block;margin-top:10px">Move up / down
+        <input type="range" min="0" max="100" value="50" style="width:100%"
+               oninput="setPan('${c.id}', this.value)"></label>
+      <label class="muted" style="display:block">Zoom
+        <input type="range" min="100" max="220" value="100" style="width:100%"
+               oninput="setZoom('${c.id}', this.value)"></label>
+      <div class="muted" id="warn-${c.id}" style="margin:6px 0"></div>
+      <button class="ghost" onclick="saveFrame('${c.id}')" id="save-${c.id}">Save this crop</button>
+      ${c.reframe ? `<div class="muted" style="margin-top:8px">saved: ${esc(c.reframe.aspect)}
+        ${c.reframe.w}×${c.reframe.h}${c.reframe.caption_safe ? "" : " — captions were clipped"}
+        · <a href="/download/${job.id}/${c.id}?variant=reframed" download>download crop</a></div>` : ""}
+    </details>
     ${hasVert ? `<div style="height:8px"></div>
       <details><summary class="muted">9:16 face-tracked version</summary>
         <div style="height:8px"></div>
@@ -77,6 +118,161 @@ function clipCard(job, c) {
          href="/download/${job.id}/${c.id}?variant=vertical" download>Download 9:16</a>` : ""}` : ""}
     <textarea id="cap-${c.id}" style="position:absolute;left:-9999px">${esc((c.caption||"") + "\n\n" + (c.hashtags||[]).join(" "))}</textarea>
   </div>`;
+}
+
+// --- spelling dictionary -------------------------------------------------
+let CAPSET = { size_wide: 20, margin_wide: 70, corrections: {} };
+
+async function loadCapset() {
+  try {
+    const r = await fetch("/api/captions/settings");
+    if (r.ok) CAPSET = await r.json();
+  } catch (e) {}
+  paintDict();
+}
+
+function paintDict() {
+  const host = document.getElementById("dict");
+  if (!host) return;
+  const entries = Object.entries(CAPSET.corrections || {});
+  host.innerHTML = entries.length
+    ? entries.map(([k, v]) => `<div class="kv"><span>${esc(k)} → <b>${esc(v)}</b></span>
+        <span style="text-align:right"><button class="ghost" style="padding:4px 10px"
+          onclick="dropCorrection('${esc(k)}')">remove</button></span></div>`).join("")
+    : `<div class="muted">Nothing yet.</div>`;
+}
+
+async function putCorrections(map) {
+  const r = await fetch("/api/captions/settings", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ corrections: map }) });
+  if (r.ok) { CAPSET = await r.json(); paintDict(); }
+}
+
+function addCorrection() {
+  const w = document.getElementById("dwrong").value.trim();
+  const g = document.getElementById("dright").value.trim();
+  if (!w || !g) return;
+  putCorrections({ ...(CAPSET.corrections || {}), [w]: g });
+  document.getElementById("dwrong").value = "";
+  document.getElementById("dright").value = "";
+}
+
+function dropCorrection(k) {
+  const m = { ...(CAPSET.corrections || {}) };
+  delete m[k];
+  putCorrections(m);
+}
+loadCapset();
+
+// --- captions ------------------------------------------------------------
+// Burned-in text is pixels, so every edit here costs a re-encode (~45s). The UI
+// is built to make you edit once and save once rather than nudge repeatedly.
+const CUES = {};
+
+async function loadCues(id) {
+  const host = document.getElementById("cues-" + id);
+  if (!host || host.dataset.loaded) return;
+  const r = await fetch(`/api/clips/${JOB_ID}/${id}/captions`);
+  if (!r.ok) { host.textContent = "No caption file for this clip."; return; }
+  const { cues } = await r.json();
+  CUES[id] = cues;
+  host.dataset.loaded = "1";
+  host.innerHTML = cues.length ? `
+    <div style="margin-bottom:8px">Fix the wording. Empty a line to drop that caption.</div>
+    ${cues.map((q, i) => `<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+       <span class="muted" style="font-size:11px;min-width:52px">${q.start.slice(3, 8)}</span>
+       <input value="${esc(q.text)}" style="flex:1" oninput="CUES['${id}'][${i}].text=this.value">
+     </div>`).join("")}
+    <label class="muted" style="display:block;margin-top:10px">Text size
+      <input type="range" min="10" max="46" value="${CAPSET.size_wide}" style="width:100%"
+             oninput="document.getElementById('sz-${id}').textContent=this.value" id="rsz-${id}"></label>
+    <label class="muted" style="display:block">Height off the bottom
+      <input type="range" min="20" max="420" value="${CAPSET.margin_wide}" style="width:100%" id="rmg-${id}"></label>
+    <div class="muted" style="margin:6px 0">size <b id="sz-${id}">${CAPSET.size_wide}</b>
+      · re-burning takes about 45s</div>
+    <button class="ghost" id="cbtn-${id}" onclick="saveCues('${id}')">Save &amp; re-burn this clip</button>
+    <button class="ghost" style="margin-top:6px" onclick="saveStyleAll('${id}')">Use this size/position for ALL future clips</button>
+  ` : "No captions on this clip.";
+}
+
+async function saveCues(id) {
+  const btn = document.getElementById("cbtn-" + id);
+  btn.disabled = true; btn.textContent = "Re-burning…";
+  try {
+    const style = { size_wide: +document.getElementById("rsz-" + id).value,
+                    margin_wide: +document.getElementById("rmg-" + id).value };
+    const r = await fetch(`/api/clips/${JOB_ID}/${id}/captions`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cues: CUES[id], style })
+    });
+    if (r.status === 401) { location.href = "/login"; return; }
+    if (!r.ok) { alert((await r.text()).slice(0, 250)); return; }
+    await load();
+  } finally { btn.disabled = false; btn.textContent = "Save & re-burn this clip"; }
+}
+
+// Style is global on purpose: you settle on one look and want it everywhere.
+// This only changes FUTURE renders — it never silently re-encodes 60 clips.
+async function saveStyleAll(id) {
+  const body = { size_wide: +document.getElementById("rsz-" + id).value,
+                 margin_wide: +document.getElementById("rmg-" + id).value };
+  const r = await fetch("/api/captions/settings", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body) });
+  if (r.ok) { CAPSET = await r.json();
+    alert("Saved as the default for every clip from now on. Clips already rendered keep their current text until you re-burn them."); }
+}
+
+// --- reframe -------------------------------------------------------------
+// The preview is pure CSS (object-fit:cover + object-position), so dragging the
+// slider is instant. Only "Save" costs an encode. The server re-derives the
+// exact crop box from the same numbers, so what you see is what gets written.
+const FRAME = {};   // clipId -> {aspect, pan, zoom}
+
+function fstate(id) { return FRAME[id] || (FRAME[id] = { aspect: "original", pan: 50, zoom: 100 }); }
+
+function paint(id) {
+  const s = fstate(id);
+  const box = document.getElementById("frame-" + id);
+  const vid = box && box.querySelector("video");
+  if (!vid) return;
+  if (s.aspect === "original") {
+    box.style.aspectRatio = "";
+    vid.style.objectFit = ""; vid.style.objectPosition = ""; vid.style.transform = "";
+  } else {
+    const [w, h] = s.aspect.split(":");
+    box.style.aspectRatio = `${w} / ${h}`;
+    vid.style.objectFit = "cover";
+    vid.style.objectPosition = `50% ${s.pan}%`;
+    vid.style.transform = `scale(${s.zoom / 100})`;
+  }
+  document.querySelectorAll(`.asp[data-clip="${id}"]`).forEach(b =>
+    b.classList.toggle("ghost", b.dataset.asp !== s.aspect));
+  // Captions live in the lower-middle band. Warn BEFORE the encode, not after.
+  const warn = document.getElementById("warn-" + id);
+  if (warn) warn.innerHTML = (s.aspect !== "original" && s.aspect !== "9:16" && s.pan < 55)
+    ? `<span style="color:var(--warn)">Captions may get cut — drag down a little.</span>`
+    : (s.aspect === "original" ? "Saving with <b>original</b> removes any saved crop." : "");
+}
+
+function setAspect(id, a) { fstate(id).aspect = a; if (a !== "original") fstate(id).pan = 62; paint(id); }
+function setPan(id, v) { fstate(id).pan = +v; paint(id); }
+function setZoom(id, v) { fstate(id).zoom = +v; paint(id); }
+
+async function saveFrame(id) {
+  const s = fstate(id);
+  const btn = document.getElementById("save-" + id);
+  btn.disabled = true; btn.textContent = "Cropping…";
+  try {
+    const r = await fetch(`/api/clips/${JOB_ID}/${id}/reframe`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ aspect: s.aspect, cy: s.pan / 100, zoom: s.zoom / 100 })
+    });
+    if (r.status === 401) { location.href = "/login"; return; }
+    if (!r.ok) { alert((await r.text()).slice(0, 250)); return; }
+    await load();
+  } finally { btn.disabled = false; btn.textContent = "Save this crop"; }
 }
 
 function copyCap(id) {

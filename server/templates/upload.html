@@ -38,6 +38,37 @@
 </div>
 
 <div class="card">
+  <h2>Look &amp; sound</h2>
+  <p class="muted">Applies to the next render — no restart needed. If a grade or a
+    voice preset ever looks or sounds wrong, turn the dial down rather than off;
+    that's what it's for.</p>
+  <div id="lookbox" class="muted">loading…</div>
+</div>
+
+<div class="card">
+  <h2>CTA outro</h2>
+  <p class="muted">A short video of you saying what you do. It gets welded onto the
+    end of <b>every</b> clip, so anyone who watches one is told what you actually
+    sell. Under 90s. Spliced on with a stream copy — it costs the clip nothing.</p>
+  <div id="outrobox" class="muted">checking…</div>
+  <div style="height:10px"></div>
+  <input type="file" id="outrofile" accept="video/*,.mp4,.mov,.m4v">
+  <div style="height:10px"></div>
+  <div class="row">
+    <button id="outrogo" disabled>Set as outro</button>
+    <button id="outrodel" class="ghost">Remove</button>
+  </div>
+  <div id="outroout" style="margin-top:8px"></div>
+</div>
+
+<div class="card">
+  <h2>Already on the machine</h2>
+  <p class="muted">Videos kept for 48h. Start a run from one without re-uploading -
+    the transcript is cached, so it skips straight to ranking.</p>
+  <div id="ondisk" class="muted">checking…</div>
+</div>
+
+<div class="card">
   <h2>How resume works</h2>
   <p class="muted">The upload is keyed to the file's name, size and date. If the
     connection dies, pick the same file again and press Upload — it asks the
@@ -49,6 +80,7 @@ const CHUNK = 5 * 1024 * 1024;      // 5 MB: small enough to retry cheaply on LT
 const RETRIES = 6;
 
 const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 let paused = false, running = false;
 
 const human = (b) => {
@@ -142,6 +174,130 @@ $("go").addEventListener("click", async () => {
     $("stop").disabled = true;
   }
 });
+
+// --- look & sound --------------------------------------------------------
+let LOOK = null;
+
+async function loadLook() {
+  try {
+    const r = await fetch("/api/look");
+    if (!r.ok) return;
+    LOOK = await r.json();
+  } catch (e) { return; }
+  const sel = (id, opts, cur) => `<select id="${id}" style="width:100%"
+      onchange="saveLook()">${Object.entries(opts).map(([k, label]) =>
+      `<option value="${k}"${k === cur ? " selected" : ""}>${esc(label)}</option>`).join("")}</select>`;
+  $("lookbox").innerHTML = `
+    <div style="font-weight:700;margin-bottom:4px">Colour</div>
+    ${sel("cpreset", LOOK.color_presets, LOOK.color_preset)}
+    <label style="display:block;margin-top:8px">Strength <b id="clab">${Math.round(LOOK.color_intensity * 100)}%</b>
+      <input type="range" min="0" max="150" value="${Math.round(LOOK.color_intensity * 100)}"
+             style="width:100%" id="cint"
+             oninput="document.getElementById('clab').textContent=this.value+'%'"
+             onchange="saveLook()"></label>
+    <div style="font-weight:700;margin:14px 0 4px">Voice</div>
+    ${sel("apreset", LOOK.audio_presets, LOOK.audio_preset)}
+    <label style="display:block;margin-top:8px">Strength <b id="alab">${Math.round(LOOK.audio_intensity * 100)}%</b>
+      <input type="range" min="0" max="150" value="${Math.round(LOOK.audio_intensity * 100)}"
+             style="width:100%" id="aint"
+             oninput="document.getElementById('alab').textContent=this.value+'%'"
+             onchange="saveLook()"></label>
+    <div class="muted" style="margin-top:8px;font-size:13px">Metallic or warbly?
+      That's the noise remover working too hard — drop Voice strength, don't raise it.
+      <b>Level only</b> turns denoising off entirely so you can hear the raw room.</div>
+    <div id="looksaved" class="muted" style="margin-top:6px"></div>`;
+}
+
+async function saveLook() {
+  const body = {
+    color_preset: $("cpreset").value, color_intensity: +$("cint").value / 100,
+    audio_preset: $("apreset").value, audio_intensity: +$("aint").value / 100,
+  };
+  const r = await fetch("/api/look", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body) });
+  if (r.ok) {
+    $("looksaved").innerHTML = `<span style="color:var(--ok)">Saved — applies to the next render.</span>`;
+    setTimeout(() => { $("looksaved").textContent = ""; }, 2500);
+  }
+}
+loadLook();
+
+// --- CTA outro -----------------------------------------------------------
+const osay = (h, c) => { $("outroout").innerHTML = `<div style="color:${c||'var(--muted)'};font-size:14px">${h}</div>`; };
+$("outrofile").addEventListener("change", () => { $("outrogo").disabled = !$("outrofile").files[0]; });
+
+async function outroInfo() {
+  try {
+    const r = await fetch("/api/outro");
+    if (!r.ok) return;
+    const o = await r.json();
+    $("outrobox").innerHTML = o.present
+      ? `<div><b>Installed</b> — ${o.name ? esc(o.name)+" · " : ""}${o.duration_s ? o.duration_s.toFixed(1)+"s · " : ""}${o.size_mb} MB</div>
+         <div style="height:8px"></div>
+         <video controls preload="none" playsinline src="/media/outro"></video>`
+      : `<div>No outro set. Clips end where the clip ends.</div>`;
+  } catch (e) {}
+}
+
+$("outrogo").addEventListener("click", async () => {
+  const f = $("outrofile").files[0];
+  if (!f) return;
+  $("outrogo").disabled = true;
+  osay(`Uploading ${human(f.size)}…`, "var(--accent)");
+  try {
+    const fd = new FormData();
+    fd.append("video", f, f.name);
+    const r = await fetch("/api/outro", { method: "POST", body: fd });
+    if (r.status === 401) { location.href = "/login"; return; }
+    if (!r.ok) { osay(esc((await r.text()).slice(0, 200)), "var(--bad)"); return; }
+    osay("Set. Every clip rendered from now on ends with it.", "var(--ok)");
+    outroInfo();
+  } catch (err) {
+    osay("Upload failed: " + esc(err.message), "var(--bad)");
+  } finally { $("outrogo").disabled = false; }
+});
+
+$("outrodel").addEventListener("click", async () => {
+  if (!confirm("Remove the outro? Clips already rendered keep theirs.")) return;
+  await fetch("/api/outro", { method: "DELETE" });
+  osay("Removed.", "var(--muted)");
+  outroInfo();
+});
+outroInfo();
+
+async function onDisk() {
+  try {
+    const r = await fetch("/api/files");
+    if (!r.ok) return;
+    const { files } = await r.json();
+    document.getElementById("ondisk").innerHTML = files.length
+      ? files.map(f => `<div style="border-top:1px solid var(--line);padding:10px 0">
+          <div style="word-break:break-all"><b>${f.name}</b></div>
+          <div class="muted" style="margin:2px 0 8px">${f.gb} GB ·
+            ${f.has_transcript ? "transcript cached" : "no transcript"} ·
+            deletes in ${f.deletes_in_hours}h</div>
+          <div class="row">
+            <button class="ghost" onclick="startExisting('${f.name}','BRAND')">Brand</button>
+            <button class="ghost" onclick="startExisting('${f.name}','TRAINER')">Trainer</button>
+            <button class="ghost" onclick="startExisting('${f.name}','BOTH')">Both</button>
+          </div></div>`).join("")
+      : `<div class="muted">Nothing on disk.</div>`;
+  } catch (e) {}
+}
+
+async function startExisting(name, prof) {
+  const r = await fetch("/api/jobs/start", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, profile: prof, include_raw: document.getElementById("raw").checked })
+  });
+  if (r.status === 401) { location.href = "/login"; return; }
+  if (!r.ok) { alert((await r.text()).slice(0, 200)); return; }
+  const j = await r.json();
+  say(`Queued job <b>${j.job_id}</b> from the saved file. <a href="/status">Watch it →</a>`, "var(--ok)");
+  location.href = "/status";
+}
+onDisk();
 
 function fmtEta(s) {
   if (!isFinite(s)) return "?";

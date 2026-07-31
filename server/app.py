@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import hmac
 import json
+import subprocess
 import mimetypes
 import shutil
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, Form, HTTPException, Request, Response, UploadFile
+from fastapi import Body, FastAPI, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
                                RedirectResponse, StreamingResponse)
 from fastapi.staticfiles import StaticFiles
@@ -198,6 +199,51 @@ async def api_job_cancel(job_id: str):
     return job
 
 
+@app.post("/api/jobs/{job_id}/retry")
+async def api_job_retry(job_id: str):
+    fresh = jobs.retry(job_id)
+    if not fresh:
+        raise HTTPException(404, "no such job, or its source video is gone")
+    return fresh
+
+
+@app.post("/api/jobs/start")
+async def api_job_start(payload: dict):
+    """Queue a job from a file already on disk - no re-upload.
+
+    The transcript is cached beside the source, so a run started this way skips
+    the slowest stage entirely and goes straight to ranking.
+    """
+    name = str(payload.get("name") or "").strip()
+    src = config.UPLOADS / Path(name).name       # basename only: no path escapes
+    if not name or not src.exists() or src.suffix.lower() not in config.VIDEO_SUFFIXES:
+        raise HTTPException(404, "no such video on disk")
+    profile = str(payload.get("profile") or "").upper()
+    if profile not in {"BRAND", "TRAINER", "BOTH"}:
+        raise HTTPException(400, "profile must be BRAND, TRAINER or BOTH")
+    job = jobs.create(src, src.name, profile=profile,
+                      include_raw=bool(payload.get("include_raw")))
+    return {"ok": True, "job_id": job["id"]}
+
+
+@app.get("/api/files")
+async def api_files():
+    """Raw uploads still on disk, with how long until retention removes them."""
+    from pipeline import retention  # noqa: PLC0415
+    items = []
+    for p in sorted(config.UPLOADS.glob("*"), key=lambda x: -x.stat().st_mtime):
+        if not p.is_file() or p.suffix.lower() not in config.VIDEO_SUFFIXES:
+            continue
+        age_h = (time.time() - p.stat().st_mtime) / 3600
+        items.append({
+            "name": p.name, "gb": round(p.stat().st_size / 1e9, 2),
+            "age_hours": round(age_h, 1),
+            "deletes_in_hours": round(max(0.0, retention.SOURCE_MAX_AGE_H - age_h), 1),
+            "has_transcript": any(config.UPLOADS.glob(f"{p.stem}*.transcript.json")),
+        })
+    return {"files": items, "usage": retention.usage()}
+
+
 @app.get("/api/jobs/{job_id}/log")
 async def api_job_log(job_id: str):
     p = config.LOGS / f"{job_id}.log"
@@ -215,7 +261,7 @@ def _find_clip(job: dict, clip_id: str) -> dict:
 
 
 def _clip_file(clip: dict, variant: str) -> Path:
-    key = "path_vertical" if variant == "vertical" else "path"
+    key = {"vertical": "path_vertical", "reframed": "path_reframed"}.get(variant, "path")
     raw = clip.get(key) or clip.get("path")
     if not raw:
         raise HTTPException(404, "clip has no file")
@@ -223,6 +269,209 @@ def _clip_file(clip: dict, variant: str) -> Path:
     if not p.exists():
         raise HTTPException(404, "clip file missing from disk")
     return p
+
+
+# --------------------------------------------------------------- look & sound
+@app.get("/api/look")
+async def look_get():
+    from pipeline import color as _c, audio_fx as _a, look as _l  # noqa: PLC0415
+    return {**_l.load(),
+            "color_presets": {k: v["label"] for k, v in _c.PRESETS.items()},
+            "audio_presets": {k: v["label"] for k, v in _a.PRESETS.items()}}
+
+
+@app.post("/api/look")
+async def look_set(body: dict = Body(...)):
+    from pipeline import look as _l  # noqa: PLC0415
+    return _l.save(body or {})
+
+
+# ------------------------------------------------------------------ captions
+@app.get("/api/captions/settings")
+async def caption_settings():
+    from pipeline import captions as _cap  # noqa: PLC0415
+    return _cap.load()
+
+
+@app.post("/api/captions/settings")
+async def caption_settings_save(body: dict = Body(...)):
+    """Global style + the spelling dictionary. Takes effect on the next render;
+    existing clips keep their burned-in pixels until they're re-rendered."""
+    from pipeline import captions as _cap  # noqa: PLC0415
+    return _cap.save(body or {})
+
+
+@app.get("/api/clips/{job_id}/{clip_id}/captions")
+async def clip_captions(job_id: str, clip_id: str):
+    from pipeline import captions as _cap  # noqa: PLC0415
+    job = jobs.load(job_id)
+    if not job:
+        raise HTTPException(404, "no such job")
+    clip = _find_clip(job, clip_id)
+    srt = Path(clip["path"]).with_suffix(".srt") if clip.get("path") else None
+    return {"cues": _cap.read_srt(srt) if srt else [], "srt": str(srt) if srt else None}
+
+
+@app.post("/api/clips/{job_id}/{clip_id}/captions")
+async def clip_captions_save(job_id: str, clip_id: str, body: dict = Body(...)):
+    """Rewrite this clip's .srt and re-burn it.
+
+    Burned-in text is pixels — there is no way to change it without re-encoding,
+    so this is the one operation that knowingly costs a generation. It re-cuts
+    from the cached source segment when that still exists, which keeps the
+    generation count at one rather than two.
+    """
+    from pipeline import captions as _cap, render as _r  # noqa: PLC0415
+
+    job = jobs.load(job_id)
+    if not job:
+        raise HTTPException(404, "no such job")
+    clip = _find_clip(job, clip_id)
+    if not clip.get("path"):
+        raise HTTPException(400, "clip was never rendered")
+
+    out = Path(clip["path"])
+    srt = out.with_suffix(".srt")
+    cues = body.get("cues")
+    if cues:
+        _cap.write_srt(srt, cues)
+    if not srt.exists():
+        raise HTTPException(400, "this clip has no caption file to edit")
+
+    # Prefer the lossless pre-cut segment; falling back to the finished clip
+    # would stack a second generation of compression on it.
+    seg = out.with_name(out.stem + "_src.mp4")
+    if seg.exists():
+        src, start, dur = seg, 1.0, float(clip["duration_s"])
+    elif Path(job.get("source_path") or "").exists():
+        src, start, dur = Path(job["source_path"]), float(clip["start_s"]), float(clip["duration_s"])
+    else:
+        src, start, dur = out, 0.0, float(clip["duration_s"])
+
+    style = body.get("style") or None
+    tmp = out.with_name(out.stem + "_recap.mp4")
+    try:
+        _r.render_wide(src, tmp, start, start + dur,
+                       subs_path=srt, grade=body.get("grade") or "",
+                       style_override=style)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        tmp.unlink(missing_ok=True)
+        raise HTTPException(500, f"re-render failed: {str(exc)[:300]}") from exc
+
+    # The outro lives on the end of the old file and was just thrown away.
+    if clip.get("outro"):
+        try:
+            from pipeline import outro as _o  # noqa: PLC0415
+            geo = _o.probe(tmp)
+            baked = _o.bake(geo["w"], geo["h"], geo["fps"],
+                            codec_args=_r._video_codec_args(),
+                            audio_args=_r._audio_args())
+            if baked:
+                _o.append(tmp, baked)
+        except Exception as exc:  # noqa: BLE001
+            clip["outro_error"] = f"{type(exc).__name__}: {exc}"[:200]
+
+    out.unlink(missing_ok=True)
+    tmp.replace(out)
+    clip["captions_edited"] = True
+    clip.pop("path_reframed", None)   # the old crop was of the old pixels
+    clip.pop("reframe", None)
+    jobs.update(job_id, clips=job["clips"])
+    return {"ok": True, "cues": _cap.read_srt(srt)}
+
+
+# --------------------------------------------------------------- CTA outro
+@app.get("/api/outro")
+async def outro_info():
+    from pipeline import outro as _o  # noqa: PLC0415
+    return _o.info()
+
+
+@app.post("/api/outro")
+async def outro_upload(video: UploadFile = Form(...)):
+    """Straight multipart, not the chunked path — a CTA is seconds long, and the
+    resumable machinery is for hour-long 4K sources."""
+    from pipeline import outro as _o  # noqa: PLC0415
+
+    if Path(video.filename or "").suffix.lower() not in config.VIDEO_SUFFIXES:
+        raise HTTPException(400, "that isn't a video file")
+    tmp = config.DATA / "tmp"
+    tmp.mkdir(parents=True, exist_ok=True)
+    staged = tmp / f"outro_upload{Path(video.filename or 'x.mp4').suffix.lower()}"
+    with staged.open("wb") as fh:
+        shutil.copyfileobj(video.file, fh)
+    try:
+        return {"ok": True, **_o.install(staged, video.filename or "")}
+    except ValueError as exc:
+        staged.unlink(missing_ok=True)
+        raise HTTPException(400, str(exc)) from None
+
+
+@app.delete("/api/outro")
+async def outro_delete():
+    from pipeline import outro as _o  # noqa: PLC0415
+    _o.remove()
+    return {"ok": True}
+
+
+@app.get("/media/outro")
+async def outro_preview():
+    from pipeline import outro as _o  # noqa: PLC0415
+    if not _o.SOURCE.exists():
+        raise HTTPException(404, "no outro installed")
+    return FileResponse(_o.SOURCE, media_type="video/mp4",
+                        headers={"Cache-Control": "no-store"})
+
+
+# ------------------------------------------------------------------- reframe
+@app.post("/api/clips/{job_id}/{clip_id}/reframe")
+async def reframe_clip(job_id: str, clip_id: str, body: dict = Body(...)):
+    """Crop a finished clip to a chosen aspect ratio and save it alongside.
+
+    Deliberately non-destructive: the 16:9 original is never overwritten, so a
+    bad crop costs one re-crop, not the clip.
+    """
+    from pipeline import reframe as rf  # noqa: PLC0415 - keeps startup light
+
+    job = jobs.load(job_id)
+    if not job:
+        raise HTTPException(404, "no such job")
+    clip = _find_clip(job, clip_id)
+    src = _clip_file(clip, "wide")
+
+    aspect = str(body.get("aspect") or "4:5")
+    if aspect not in rf.ASPECTS:
+        raise HTTPException(400, f"aspect must be one of {sorted(rf.ASPECTS)}")
+
+    try:
+        src_w, src_h = rf.probe(src)
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        raise HTTPException(500, f"could not read clip: {exc}") from exc
+
+    box = rf.plan(src_w, src_h, aspect,
+                  zoom=float(body.get("zoom", 1.0)),
+                  cx=float(body.get("cx", 0.5)),
+                  cy=float(body.get("cy", 0.5)))
+    if box is None:      # "original" — nothing to do
+        clip.pop("path_reframed", None)
+        clip.pop("reframe", None)
+        jobs.update(job_id, clips=job["clips"])
+        return {"ok": True, "aspect": "original", "reframed": False}
+
+    if body.get("preview"):
+        return {"ok": True, "box": box, "caption_safe": rf.caption_safe(box)}
+
+    dest = src.with_name(src.stem + "_reframed.mp4")
+    try:
+        rf.apply(src, dest, box)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        raise HTTPException(500, f"crop failed: {str(exc)[:300]}") from exc
+
+    clip["path_reframed"] = str(dest)
+    clip["reframe"] = {**box, "caption_safe": rf.caption_safe(box)}
+    jobs.update(job_id, clips=job["clips"])
+    return {"ok": True, "box": box, "caption_safe": rf.caption_safe(box),
+            "reframed": True}
 
 
 @app.get("/media/{job_id}/{clip_id}")
@@ -351,6 +600,60 @@ async def clip_decision(job_id: str, clip_id: str, payload: dict):
 
     jobs.update(job_id, clips=job["clips"])
     return {"ok": True, "verdict": verdict, "copied": copied}
+
+
+@app.get("/chat", response_class=HTMLResponse)
+async def chat_page(request: Request):
+    return TEMPLATES.TemplateResponse(request, "chat.html", {})
+
+
+@app.get("/api/chat/threads")
+async def chat_threads():
+    from pipeline import chat  # noqa: PLC0415 - keeps the server bootable without it
+    return {"threads": chat.list_threads()}
+
+
+@app.post("/api/chat/threads")
+async def chat_new_thread(payload: dict):
+    from pipeline import chat  # noqa: PLC0415
+    return chat.new_thread(str(payload.get("title") or ""))
+
+
+@app.get("/api/chat/threads/{tid}")
+async def chat_get_thread(tid: str):
+    from pipeline import chat  # noqa: PLC0415
+    t = chat.load_thread(tid)
+    if not t:
+        raise HTTPException(404, "no such thread")
+    return t
+
+
+@app.post("/api/chat/threads/{tid}/send")
+async def chat_send(tid: str, payload: dict):
+    from pipeline import chat  # noqa: PLC0415
+    t = chat.load_thread(tid)
+    if not t:
+        raise HTTPException(404, "no such thread")
+    msg = str(payload.get("message") or "").strip()
+    if not msg:
+        raise HTTPException(400, "empty message")
+    try:
+        return chat.send(t, msg, config)
+    except Exception as exc:  # noqa: BLE001 - surface the reason, don't 500 blankly
+        raise HTTPException(502, f"brain call failed: {str(exc)[:200]}") from None
+
+
+@app.post("/api/chat/threads/{tid}/diff/{diff_id}")
+async def chat_diff(tid: str, diff_id: str, payload: dict):
+    from pipeline import chat  # noqa: PLC0415
+    t = chat.load_thread(tid)
+    if not t:
+        raise HTTPException(404, "no such thread")
+    res = chat.apply_diff(t, diff_id, bool(payload.get("approve")),
+                          str(payload.get("note") or ""))
+    if not res.get("ok"):
+        raise HTTPException(400, res.get("reason") or "could not apply")
+    return res
 
 
 @app.get("/api/net")

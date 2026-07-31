@@ -22,10 +22,23 @@ _SENTENCE_END = re.compile(r'[.!?]["\')\]]?\s*$')
 # The teach->aha signal BRAND ranks highest. Kept here so a candidate carrying one
 # is never dropped by a length heuristic before the ranker sees it.
 AHA_CUES = [
-    "makes perfect sense", "sparked my brain", "that makes sense", "i never thought",
-    "never thought about it", "that's a good point", "oh okay", "ohhh", "wait so",
-    "that's interesting", "i see what you", "gotcha", "that clicks", "makes so much sense",
-    "you just", "that's actually", "huh", "right right", "exactly what i",
+    # Verbatim from Jason's own recordings - these are the exact phrases his
+    # trainers use at the moment they get it.
+    "makes perfect sense", "sparked my brain", "say that again", "writing that down",
+    "i appreciate you", "bro", "hold on", "wait so", "that makes sense",
+    "i never thought", "never thought about it", "oh okay", "ohhh", "that's smart",
+    "gotcha", "that clicks", "makes so much sense", "okay okay",
+    "that's a good point", "i see what you", "that's actually",
+]
+
+# RECITAL is the strongest signal there is: the trainer repeating the framework
+# back in his own words ("so you're not posting content, you're building a case").
+# Reward it above every other cue - agreement is cheap, restatement is proof the
+# idea landed.
+RECITAL_MARKERS = [
+    "so you're saying", "so basically", "so it's not", "so instead of",
+    "so what you're saying", "so i'm not", "so you're not", "so if i",
+    "oh so", "so like", "so the point is", "so really",
 ]
 
 
@@ -35,7 +48,13 @@ def _clean(t: str) -> str:
 
 def has_aha(text: str) -> bool:
     low = text.lower()
-    return any(c in low for c in AHA_CUES)
+    return any(c in low for c in AHA_CUES) or has_recital(text)
+
+
+def has_recital(text: str) -> bool:
+    """Did the other person restate the idea in their own words? Jason's #1 signal."""
+    low = text.lower()
+    return any(m in low for m in RECITAL_MARKERS)
 
 
 def _complete_thought(text: str) -> bool:
@@ -80,6 +99,7 @@ def build_candidates(transcript: dict, *, min_s: float = 30.0, max_s: float = 80
                 "seg_to": j,
                 "word_count": len(joined.split()),
                 "has_aha": has_aha(joined),
+                "has_recital": has_recital(joined),
             })
     if not out:
         return []
@@ -89,7 +109,9 @@ def build_candidates(transcript: dict, *, min_s: float = 30.0, max_s: float = 80
     # moment are two usable posts. Only near-identical spans get dropped.
     # Length is NOT a tiebreaker any more — sorting by longest made every clip
     # come out at exactly the maximum.
-    out.sort(key=lambda c: (not c["has_aha"], c["start_s"]))
+    # Recital first, then any aha cue, then chronological. A window where the
+    # framework got repeated back survives dedup ahead of everything else.
+    out.sort(key=lambda c: (not c["has_recital"], not c["has_aha"], c["start_s"]))
     kept: list[dict] = []
     for cand in out:
         clash = False

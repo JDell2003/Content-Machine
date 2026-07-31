@@ -15,14 +15,34 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
-from . import audio_gate, brain, prompts, render, segment, transcribe
+from . import (audio_fx, audio_gate, brain, color, outro, prompts, render,
+               segment, transcribe)
+from . import look as _look
 
 MAX_RANK_CALLS = 3
+# Clips render in parallel. Measured per clip: ~2s pre-cut + ~6s loudness
+# analysis + ~35s encode. The encode is NVENC (GPU) but the audio filter chain
+# (arnndn denoise, EQ, compressor) is CPU-bound, so serial rendering pegged one
+# core and left the other 15 - and most of the encoder - idle.
+RENDER_WORKERS = 3
 # A 67-minute recording yielded 4 clips at a cap of 8 and a floor of 55 — far too
 # stingy for a source that long. Volume with variety is the goal; overlap and
 # repetition are acceptable because the same idea told two ways are two posts.
-MAX_RENDER_PER_PROFILE = 40
+MAX_RENDER_PER_PROFILE = 60
 SCORE_FLOOR = 45
+
+
+def _cancelled(job_id: str) -> bool:
+    """Cheap disk read. Called between every expensive stage so a cancel lands in
+    seconds instead of waiting out a 7-minute caption call."""
+    from server import jobs as _j  # noqa: PLC0415
+    return bool((_j.load(job_id) or {}).get("cancel_requested"))
+
+
+def _stop(job_id: str, report, clips: list) -> None:
+    from server import jobs as _j  # noqa: PLC0415
+    report(stage="cancelled", message=f"Cancelled ({len(clips)} clips kept)")
+    _j.update(job_id, status=_j.CANCELLED, finished_at=time.time(), clips=clips)
 
 
 def _profiles_for(job: dict) -> tuple[list[str], bool]:
@@ -33,6 +53,54 @@ def _profiles_for(job: dict) -> tuple[list[str], bool]:
     if want in prompts.PROFILES:
         return [want], raw
     return ["BRAND"], raw
+
+
+def _diversify(ranked: list[dict], limit: int, *, bucket_s: float = 300.0,
+               per_bucket: int = 4, per_topic: int = 3) -> list[dict]:
+    """Pick the top N with spread, not just the top N by score.
+
+    Straight score-ordering pulled clip after clip out of whichever five minutes
+    happened to be strongest, so a 67-minute conversation came back looking like
+    one topic. Repetition of a GOOD idea is wanted ("same meat, different cuts")
+    - a feed of nothing else is not.
+
+    Two soft caps, applied in score order:
+      * at most `per_bucket` clips from any 5-minute stretch of the source
+      * at most `per_topic` clips sharing a structure tag (teach-aha, story...)
+
+    Both are soft: if the caps leave the list short, the best of the rejected
+    are added back rather than shipping fewer clips than asked for.
+    """
+    chosen: list[dict] = []
+    overflow: list[dict] = []
+    bucket_count: dict[int, int] = {}
+    topic_count: dict[str, int] = {}
+
+    for c in ranked:
+        b = int(c["start_s"] // bucket_s)
+        topic = (c.get("structure") or "other").lower()
+        if bucket_count.get(b, 0) >= per_bucket or topic_count.get(topic, 0) >= per_topic:
+            overflow.append(c)
+            continue
+        chosen.append(c)
+        bucket_count[b] = bucket_count.get(b, 0) + 1
+        topic_count[topic] = topic_count.get(topic, 0) + 1
+        if len(chosen) >= limit:
+            return chosen
+
+    # Caps were tighter than the target. Backfill in ROUNDS, taking the best
+    # remaining from each bucket in turn, so raising the ceiling still spreads
+    # the extras instead of dumping them all back into the busiest stretch.
+    by_bucket: dict[int, list[dict]] = {}
+    for c in overflow:
+        by_bucket.setdefault(int(c["start_s"] // bucket_s), []).append(c)
+    while len(chosen) < limit and any(by_bucket.values()):
+        for b in sorted(by_bucket):
+            if len(chosen) >= limit:
+                break
+            if by_bucket[b]:
+                chosen.append(by_bucket[b].pop(0))
+    return chosen
 
 
 def _batches(items: list, n: int) -> list[list]:
@@ -71,7 +139,7 @@ def run_pipeline(*, job: dict, info: dict, report: Callable[..., None], cfg) -> 
     # ---- 2. candidates + audio gate ---------------------------------------
     report(stage="candidates", progress=0.42, message="Finding complete-thought windows")
     cands = segment.build_candidates(tr, min_s=cfg.CLIP_MIN_S, max_s=cfg.CLIP_MAX_S,
-                                     max_candidates=200, overlap_frac=0.85)
+                                     max_candidates=320, overlap_frac=0.92)
     if not cands:
         raise RuntimeError("no complete-thought windows of the right length were found")
 
@@ -112,6 +180,8 @@ def run_pipeline(*, job: dict, info: dict, report: Callable[..., None], cfg) -> 
                     ranked[cid] = row
             report(stage="rank", progress=span0 + span * 0.35 * i / max(1, len(batches)),
                    message=f"{profile}: ranked {len(ranked)}/{len(cands)}")
+            if _cancelled(job_id):
+                return _stop(job_id, report, all_clips)
 
         if not ranked:
             report(message=f"{profile}: ranking produced nothing; skipping this profile")
@@ -133,15 +203,18 @@ def run_pipeline(*, job: dict, info: dict, report: Callable[..., None], cfg) -> 
             merged.append({**c, "score": score, "hook": str(r.get("hook") or "").strip(),
                            "why": str(r.get("why") or "").strip(),
                            "structure": str(r.get("structure") or "").strip(),
+                           "topic": str(r.get("topic") or "").strip(),
                            "profile_tag": str(r.get("profile_tag") or profile).upper(),
                            "peak_lines": r.get("peak_lines") or []})
         merged.sort(key=lambda c: -c["score"])
-        merged = merged[:MAX_RENDER_PER_PROFILE]
+        merged = _diversify(merged, MAX_RENDER_PER_PROFILE)
         if not merged:
             report(message=f"{profile}: nothing scored above {SCORE_FLOOR}")
             continue
 
         # ---- 4. captions + review (ONE call for the whole video) ---------
+        if _cancelled(job_id):
+            return _stop(job_id, report, all_clips)
         report(stage="caption", progress=span0 + span * 0.45,
                message=f"{profile}: writing {len(merged)} captions in one call")
         try:
@@ -160,11 +233,12 @@ def run_pipeline(*, job: dict, info: dict, report: Callable[..., None], cfg) -> 
         # ---- 5. render (single pass from source) -------------------------
         outdir = cfg.CLIPS / job_id / profile.lower()
         outdir.mkdir(parents=True, exist_ok=True)
-        for rank_i, c in enumerate(merged, start=1):
-            frac = span0 + span * (0.5 + 0.5 * rank_i / len(merged))
-            report(stage="render", progress=frac,
-                   message=f"{profile}: rendering {rank_i}/{len(merged)} "
-                           f"({segment.stamp(c['start_s'])})")
+        done_count = [0]
+        import threading  # noqa: PLC0415
+        lock = threading.Lock()
+
+        def _one(rank_i: int, c: dict) -> dict:
+            """Render one clip. Runs on a worker thread."""
             cid = f"{profile.lower()}-{c['cid']}"
             base = outdir / f"{rank_i:02d}_{c['cid']}"
             meta = by_cid.get(c["cid"], {})
@@ -176,6 +250,7 @@ def run_pipeline(*, job: dict, info: dict, report: Callable[..., None], cfg) -> 
                 "start_s": c["start_s"], "end_s": c["end_s"],
                 "duration_s": c["duration_s"], "timestamp": segment.stamp(c["start_s"]),
                 "score": c["score"], "why": c["why"], "structure": c["structure"],
+                "topic": c.get("topic", ""),
                 "peak_lines": c["peak_lines"], "transcript": c["text"],
                 "hook": (meta.get("hook") or c["hook"]).strip(),
                 "caption": str(meta.get("caption") or "").strip(),
@@ -186,21 +261,75 @@ def run_pipeline(*, job: dict, info: dict, report: Callable[..., None], cfg) -> 
                 "audio_flags": c["audio"]["flags"],
                 "decision": "pending", "path": None, "path_vertical": None,
             }
+            # Lossless pre-cut FIRST. Every downstream step (face detect, silence
+            # scan, loudness measure, both renders) then reads an ~80s file rather
+            # than seeking around a 10 GB 4K one. Measured before this: 11 minutes
+            # per clip because ffmpeg re-decoded from the file start every time.
+            seg = outdir / f"{rank_i:02d}_{c['cid']}_src.mp4"
             try:
-                wide = render.render_wide(src, base.with_suffix(".mp4"),
-                                          c["start_s"], c["end_s"])
+                render.cut_segment(src, seg, c["start_s"], c["duration_s"])
+                work, w_start, w_end = seg, 1.0, 1.0 + c["duration_s"]
+            except Exception:  # noqa: BLE001 - fall back to seeking the original
+                work, w_start, w_end = src, c["start_s"], c["end_s"]
+
+            # Look and sound. Read fresh per clip so a change made on the phone
+            # applies to the next render without restarting the server.
+            look = {**_look.load(), **((job or {}).get("look") or {})}
+            c_preset = look["color_preset"]
+            c_amt = float(look["color_intensity"])
+            afilter, ainfo = audio_fx.build_chain(
+                work, w_start, c["duration_s"],
+                preset=look["audio_preset"], intensity=float(look["audio_intensity"]))
+            grade = color.filter_chain(c_preset, c_amt)
+            clip["grade"] = color.describe(c_preset, c_amt)
+            # Silence cutting is OFF by default. Even tuned conservatively it
+            # clipped words on real speech, and 0.8s saved is not worth a clip
+            # that sounds broken. CM_CUT_SILENCE=1 re-enables it.
+            keeps = (render.silence_cuts(work, w_start, w_end)
+                     if getattr(cfg, "CUT_SILENCE", False) else None)
+            trimmed = (c["duration_s"] - sum(b - a for a, b in keeps)) if keeps else 0.0
+            punches = c.get("peak_lines") or []
+            clip["audio_fx"] = audio_fx.describe(ainfo)
+            clip["silence_removed_s"] = round(max(0.0, trimmed), 1)
+            clip["punch_ins"] = len(punches[:3])
+
+            # Captions burn into the 16:9 - that's the clip that gets posted.
+            srt = render.write_karaoke_srt(words, base.with_suffix(".srt"))
+            clip["captions_burned"] = bool(srt)
+            try:
+                wide = render.render_wide(work, base.with_suffix(".mp4"),
+                                          w_start, w_end,
+                                          punch_ins=punches, keeps=keeps,
+                                          afilter=afilter, subs_path=srt, grade=grade)
                 clip["path"] = str(wide)
             except Exception as exc:  # noqa: BLE001 - one bad clip must not sink the job
                 clip["render_error"] = f"{type(exc).__name__}: {exc}"[:300]
                 report(message=f"{profile}: 16:9 render failed for {c['cid']} "
                                f"({type(exc).__name__})")
 
+            # ---- CTA outro -------------------------------------------------
+            # Spliced on with a stream copy, so the clip keeps exactly the one
+            # encode it came out of the renderer with. The outro is baked once
+            # per geometry (and per look) and reused by every clip after that.
+            if clip["path"] and look.get("outro", True) and outro.info()["present"]:
+                try:
+                    geo = outro.probe(Path(clip["path"]))
+                    baked = outro.bake(geo["w"], geo["h"], geo["fps"],
+                                       grade=grade, afilter=afilter,
+                                       codec_args=render._video_codec_args(),
+                                       audio_args=render._audio_args())
+                    if baked:
+                        _, how = outro.append(Path(clip["path"]), baked)
+                        clip["outro"] = how
+                except Exception as exc:  # noqa: BLE001 - a CTA is never worth losing a clip over
+                    clip["outro_error"] = f"{type(exc).__name__}: {exc}"[:200]
+
             if cfg.MAKE_VERTICAL and clip["path"]:
                 try:
-                    srt = render.write_karaoke_srt(words, base.with_suffix(".srt"))
                     vert = render.render_vertical(
-                        src, base.with_name(base.name + "_vertical").with_suffix(".mp4"),
-                        c["start_s"], c["end_s"], subs_path=srt)
+                        work, base.with_name(base.name + "_vertical").with_suffix(".mp4"),
+                        w_start, w_end, subs_path=srt,
+                        punch_ins=punches, keeps=keeps, afilter=afilter)
                     if vert:
                         clip["path_vertical"] = str(vert)
                         clip["captions_burned"] = bool(srt)
@@ -212,9 +341,35 @@ def run_pipeline(*, job: dict, info: dict, report: Callable[..., None], cfg) -> 
                 except Exception as exc:  # noqa: BLE001
                     clip["vertical_note"] = f"9:16 failed: {type(exc).__name__}: {exc}"[:200]
 
-            all_clips.append(clip)
-            from server import jobs as _jobs  # noqa: PLC0415 - avoid import cycle
-            _jobs.update(job_id, clips=all_clips)
+            if work is not src:
+                try:
+                    work.unlink(missing_ok=True)   # temp remux, not a deliverable
+                except OSError:
+                    pass
+
+            with lock:
+                all_clips.append(clip)
+                done_count[0] += 1
+                report(stage="render",
+                       progress=span0 + span * (0.5 + 0.5 * done_count[0] / len(merged)),
+                       message=f"{profile}: rendered {done_count[0]}/{len(merged)}",
+                       clips=all_clips)
+            return clip
+
+        from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+        report(stage="render", progress=span0 + span * 0.5,
+               message=f"{profile}: rendering {len(merged)} clips, "
+                       f"{RENDER_WORKERS} at a time")
+        with ThreadPoolExecutor(max_workers=RENDER_WORKERS) as pool:
+            futures = [pool.submit(_one, i, c) for i, c in enumerate(merged, start=1)]
+            for fut in futures:
+                if _cancelled(job_id):
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    return _stop(job_id, report, all_clips)
+                try:
+                    fut.result()
+                except Exception as exc:  # noqa: BLE001 - one bad clip, not the job
+                    report(message=f"{profile}: a clip failed ({type(exc).__name__})")
 
         per_profile_cost[profile] = brain.usage_summary(job_id)
 

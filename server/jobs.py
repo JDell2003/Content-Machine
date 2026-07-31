@@ -106,6 +106,44 @@ def append(job_id: str, key: str, value: Any) -> Optional[dict]:
         return job
 
 
+def _kill_ffmpeg() -> int:
+    """Stop in-flight work so a cancel is immediate.
+
+    Two things can hold the worker for minutes: an ffmpeg encode, and a single
+    `claude -p` call (writing 60 captions takes ~7 min). Killing only ffmpeg left
+    the queue blocked behind a brain call that nobody was waiting on any more.
+    """
+    n = 0
+    import subprocess  # noqa: PLC0415
+    for image in ("ffmpeg.exe", "node.exe"):
+        try:
+            r = subprocess.run(["taskkill", "/F", "/IM", image],
+                               capture_output=True, timeout=30)
+            if r.returncode == 0:
+                n += 1
+        except (OSError, subprocess.SubprocessError):
+            continue
+    return n
+
+
+def retry(job_id: str) -> Optional[dict]:
+    """Re-queue the same source as a fresh job. The transcript is cached next to
+    the file, so a retry skips transcription entirely and goes straight to
+    ranking - which is why it's much faster than the first run."""
+    old = load(job_id)
+    if not old:
+        return None
+    src = Path(old.get("source_path", ""))
+    if not src.exists():
+        return None
+    fresh = create(src, old.get("original_name") or src.name,
+                   profile=old.get("profile", "BRAND"),
+                   include_raw=bool(old.get("include_raw")))
+    update(fresh["id"], message="Retry - reusing cached transcript",
+           retry_of=job_id)
+    return fresh
+
+
 def cancel(job_id: str) -> Optional[dict]:
     """Cancel only helps a queued job; a running ffmpeg/whisper is left alone
     rather than half-killed, so the flag is advisory for the worker loop."""
@@ -118,8 +156,10 @@ def cancel(job_id: str) -> Optional[dict]:
                        finished_at=time.time())
             _write(job)
         else:
-            job["cancel_requested"] = True
+            job.update(cancel_requested=True, status=CANCELLED, stage="cancelled",
+                       finished_at=time.time(), message="Cancelled")
             _write(job)
+            _kill_ffmpeg()
         return job
 
 

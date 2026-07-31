@@ -40,3 +40,14 @@ desktop.ini
 .DS_Store
 .idea/
 .vscode/
+
+# ---- your brand dossier: PRIVATE, and this repo is public ----
+# These hold real positioning and real business numbers (BRAND-CORE.md states
+# revenue and client count outright). The code runs fine without them - it
+# treats each as optional and falls back to an empty section. Keep them local.
+BRAND-CORE.md
+BRAND-INTERVIEW.md
+EXEMPLARS.md
+MACHINE-VOICE.md
+exemplars/
+*.bak

@@ -31,7 +31,18 @@ These are hard rules. A candidate that breaks one is not a candidate.
    that depend on something said earlier ("like I mentioned", "going back to that
    thing"), or that reference people/screens the viewer can't see.
 7. **Energy.** Reward audible conviction, pace, and emphasis. Penalize flat
-   monotone stretches, long pauses, and thinking-out-loud rambles.
+   monotone stretches, long pauses, and thinking-out-loud rambles. But substance
+   wins: a strong idea delivered flat beats a weak idea delivered with energy.
+   Flat delivery is a fixable note, not a disqualification.
+
+8. **One bad sentence.** If cutting it still leaves a complete thought, cut it and
+   keep the clip. If it doesn't, drop the clip. Complete thoughts is law.
+
+9. **Repetition is the strategy, not a bug.** One belief, 50–100 stories. Never
+   downrank something for restating an idea that appeared elsewhere.
+
+10. **Nobody looks bad.** A clip that makes the trainer look stupid does not post,
+    however good it is otherwise. Cut him *getting it*, never him *struggling*.
 
 ### Scoring
 Score every candidate 0–100. Anything below 55 should not be rendered.
@@ -48,16 +59,40 @@ Score every candidate 0–100. Anything below 55 should not be rendered.
 coaching, not by claiming it.
 
 **Rank highest — teach→aha pairs.** Two voices: one explains, the other audibly
-gets it. The moment of getting it is the product. Listen for the second voice
-saying things like:
-- "that makes perfect sense"
-- "that just sparked my brain"
-- "ohhh, okay" / "wait, so..." / "I never thought about it like that"
-- them restating the idea back in their own words (strongest signal of all)
+gets it. The moment of getting it is the product. Real phrases from these
+recordings:
+- "that makes perfect sense" · "man, that just sparked my brain"
+- "wait, say that again" · "hold on, I'm writing that down"
+- "BRO" · "I appreciate you fr"
+- **RECITAL — him repeating the framework back in his own words. This is the
+  single strongest signal there is.** e.g. *"so you're not posting content...
+  you're building a case."* Agreement is cheap; restatement is proof it landed.
+  Rank recital above every other cue.
+
+**Where the gold is.** These are unscripted coaching calls. The first ~20 minutes
+are logistics and warm-up — expect little there. The good material clusters
+mid-to-late, once he's rolling. Roughly **10–20% of a session is postable**; do
+not force a quota out of the opening.
+
+**The belief every BRAND clip should trace back to:** trainers don't have a
+knowledge problem, they have an execution and distribution problem. Sales is the
+bottleneck, not content. Rank higher anything where Jason attacks the "build a
+following and clients will come" belief, or names the gap between what the
+trainer thinks is wrong (algorithm, followers, gear, another cert) and what
+actually is (no offer, no funnel, no follow-up, no closer).
+
+**Never let a caption claim** revenue earned, clients closed, or paid-ads
+expertise. Today those are $0 / 0 / none. Truthful proof only: trainers in
+pipeline, views moved, DMs sent, leads captured.
 
 A clip where someone visibly changes their mind on camera is worth more than any
 clip where I'm merely correct. **Teach→aha pairs outrank everything else in this
 profile.** Rank them top even if energy or length is imperfect.
+
+**Also strong — Jason's own lines, use them verbatim when they appear:**
+"I only eat when you eat" · "you literally just train" · "you post, I close, you
+get paid" · "nobody's coming to save your business" · "the fortune's in the
+follow-up" · "building a case" · "green light" · "lock it in".
 
 **Also strong:**
 - Me coaching business and content strategy: pricing, positioning, offers, what

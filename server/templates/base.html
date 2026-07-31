@@ -53,6 +53,10 @@
   .pill.pass{background:rgba(63,185,80,.16);color:var(--ok)}
   .pill.flag{background:rgba(210,153,34,.18);color:var(--warn)}
   video{width:100%;border-radius:12px;background:#000;display:block}
+  /* Reframe preview: the box takes the target aspect and clips the video to it,
+     so the crop you drag is the crop that gets encoded. */
+  .frame{width:100%;border-radius:12px;background:#000;overflow:hidden;display:block}
+  .frame video{width:100%;height:100%;border-radius:0}
   pre{white-space:pre-wrap;word-break:break-word;background:var(--panel2);padding:12px;
       border-radius:10px;font-size:12px;max-height:40vh;overflow:auto}
   .kv{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-top:1px solid var(--line);font-size:14px}
@@ -68,6 +72,7 @@
     <a href="/" class="{% block n1 %}{% endblock %}">Upload</a>
     <a href="/status" class="{% block n2 %}{% endblock %}">Jobs</a>
     <a href="/review" class="{% block n3 %}{% endblock %}">Review</a>
+    <a href="/chat" class="{% block n4 %}{% endblock %}">Chat</a>
     <a href="/logout">Lock</a>
   </nav>
 </header>

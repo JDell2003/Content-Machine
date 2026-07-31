@@ -79,12 +79,25 @@ def rank_prompt(*, profile: str, raw_addon: bool, shared: str, profile_block: st
         "posts. Never downrank something for resembling another candidate.",
         "- Vary the length. Short punchy 30s clips and longer 2-minute teaches are "
         "both wanted; do not push everything to the maximum length.",
+        "- SAME MEAT, DIFFERENT CUTS is the goal. One good idea sliced three ways "
+        "with three different hooks is three posts, not one. Score each cut on "
+        "its own merit and give each a DIFFERENT hook - do not reuse a hook "
+        "across overlapping candidates.",
+        "- Aim to pass 40+ candidates from an hour of material. Quantity with "
+        "quality: the bench should be deep enough to post daily for weeks.",
+        "- BUT SPREAD IT OUT. Repeating one good idea is fine; a feed that is ALL "
+        "one idea is not. Pull from across the WHOLE recording, not just the "
+        "strongest stretch, and cover different subjects, not one subject "
+        "restated forty times.",
+        "- Give each clip a short \"topic\" tag (2-4 words, e.g. \"follow-up\", "
+        "\"pricing\", \"dirty bulk story\") so near-duplicates are visible.",
         "",
         "Reply with ONLY this JSON, no prose:",
         '{"ranked":[{"cid":"c001","score":87,"profile_tag":"BRAND",'
         '"hook":"the scroll-stopping first line, <=12 words",'
         '"why":"one line: which framework rule it hits",'
         '"structure":"attack-relate-resolve|loop|teach-aha|story|raw|other",'
+        '"topic":"2-4 words naming the subject",'
         '"peak_lines":[{"t_rel_s":12.5,"why":"the aha"}],'
         '"complete_thought":true,"self_contained":true}]}',
         "",

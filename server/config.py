@@ -41,6 +41,13 @@ def _i(key: str, default: int) -> int:
         return default
 
 
+def _f(key: str, default: float) -> float:
+    try:
+        return float(_s(key, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
 def _b(key: str, default: bool) -> bool:
     return _s(key, "1" if default else "0").lower() in {"1", "true", "yes", "on"}
 
@@ -54,6 +61,7 @@ BRAIN_MODE = _s("CM_BRAIN", "auto").lower()          # auto | cli | api
 ANTHROPIC_API_KEY = _s("ANTHROPIC_API_KEY")
 RANK_MODEL = _s("CM_RANK_MODEL", "opus")
 CAPTION_MODEL = _s("CM_CAPTION_MODEL", "sonnet")
+CHAT_MODEL = _s("CM_CHAT_MODEL", "sonnet")
 BRAIN_TIMEOUT_S = _i("CM_BRAIN_TIMEOUT_S", 900)
 
 WHISPER_MODEL = _s("CM_WHISPER_MODEL", "medium")
@@ -63,6 +71,15 @@ WHISPER_COMPUTE = _s("CM_WHISPER_COMPUTE", "auto")
 CLIP_MIN_S = _i("CM_CLIP_MIN_S", 30)
 CLIP_MAX_S = _i("CM_CLIP_MAX_S", 80)
 MAKE_VERTICAL = _b("CM_MAKE_VERTICAL", True)
+CUT_SILENCE = _b("CM_CUT_SILENCE", False)
+
+# Look and sound. Presets are per environment because the fix differs — a warm
+# flat office and a green-lit gym need opposite corrections. Both scale with an
+# intensity dial so a wrong guess is adjustable instead of a ruined clip.
+COLOR_PRESET = _s("CM_COLOR_PRESET", "office")      # office|gym|outdoor|neutral
+COLOR_INTENSITY = _f("CM_COLOR_INTENSITY", 1.0)     # 0 = off
+AUDIO_PRESET = _s("CM_AUDIO_PRESET", "office")      # office|gym|quiet|raw
+AUDIO_INTENSITY = _f("CM_AUDIO_INTENSITY", 1.0)     # 0 = level only
 
 FRAMEWORKS_PATH = ROOT / "FRAMEWORKS.md"
 

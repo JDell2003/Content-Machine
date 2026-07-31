@@ -10,12 +10,35 @@
   <h2>This machine</h2>
   <div id="net" class="muted">checking…</div>
 </div>
+<div class="card">
+  <h2>Raw videos on disk</h2>
+  <p class="muted">Sources auto-delete after 48h, clips after 7 days, approved kept forever.</p>
+  <div id="files" class="muted">checking…</div>
+</div>
 <div id="list"></div>
 
 <script>
 const human = (b) => b < 1048576 ? (b/1024).toFixed(0)+" KB"
   : b < 1073741824 ? (b/1048576).toFixed(1)+" MB" : (b/1073741824).toFixed(2)+" GB";
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+// The bar only moves when a whole stage finishes, and a ranking batch takes
+// ~3 minutes. Without this the UI looks frozen and people cancel good jobs.
+function stageHint(j) {
+  const since = j.started_at ? Math.round((Date.now()/1000) - j.started_at) : 0;
+  const mins = (s) => s < 60 ? `${s}s` : `${Math.round(s/60)} min`;
+  const map = {
+    transcribe: "Transcribing on the GPU — about 12 min for an hour (cached after the first run)",
+    candidates: "Scanning for complete-thought windows — under a minute",
+    rank: "Thinking. Each batch is one big call, ~3 min. The bar jumps in 3 steps, it is not stuck.",
+    caption: "Writing every caption in ONE call — this is the long quiet one, ~7 min",
+    render: "Rendering ~45s per clip. Clips appear on Review as they finish.",
+    probe: "Reading the file",
+    starting: "Starting up",
+  };
+  const note = map[j.stage] || "";
+  return note ? `${note} · running ${mins(since)}` : `running ${mins(since)}`;
+}
 
 function ago(ts) {
   if (!ts) return "";
@@ -33,21 +56,61 @@ function card(j) {
     <div class="row" style="align-items:center">
       <div style="flex:3;min-width:0">
         <b style="word-break:break-all">${esc(j.original_name)}</b>
+        <div class="muted">
+          <span style="font-family:monospace">${esc(j.id)}</span> ·
+          <b style="color:var(--accent)">${esc(j.profile || "BRAND")}</b>${j.include_raw ? "+RAW" : ""}
+          ${j.retry_of ? " · retry" : ""}
+        </div>
         <div class="muted">${human(j.size_bytes||0)}${j.duration_s ? " · "+(j.duration_s/60).toFixed(1)+" min" : ""} · ${ago(j.created_at)}</div>
       </div>
       <div style="flex:1;text-align:right"><span class="pill ${j.status}">${j.status}</span></div>
     </div>
     <div class="bar"><i style="width:${pct}%"></i></div>
     <div class="muted">${pct}% — ${esc(j.stage)}: ${esc(j.message)}</div>
+    ${j.status === "running" ? `<div class="muted" style="margin-top:4px;font-size:13px;color:var(--accent)">${stageHint(j)}</div>` : ""}
     ${j.error ? `<pre>${esc(j.error)}</pre>` : ""}
     <div style="margin-top:8px">${reviewLink}</div>
-    ${j.status === "queued" ? `<div style="height:8px"></div><button class="ghost" onclick="cancel('${j.id}')">Cancel</button>` : ""}
+    <div style="height:10px"></div>
+    <div class="row">
+      ${(j.status === "queued" || j.status === "running")
+        ? `<button class="bad" onclick="cancelJob('${j.id}')">Cancel</button>` : ""}
+      <button class="ghost" onclick="retryJob('${j.id}')" title="Re-run using the cached transcript (much faster)">Retry</button>
+    </div>
   </div>`;
 }
 
-async function cancel(id) {
+async function cancelJob(id) {
+  if (!confirm("Stop this job? Clips already rendered are kept.")) return;
   await fetch(`/api/jobs/${id}/cancel`, { method: "POST" });
   tick();
+}
+
+// Retry re-queues the same source. Transcription is cached next to the file, so
+// a retry skips the slowest stage entirely.
+async function retryJob(id) {
+  const r = await fetch(`/api/jobs/${id}/retry`, { method: "POST" });
+  if (r.status === 401) { location.href = "/login"; return; }
+  if (!r.ok) { alert((await r.text()).slice(0, 200)); return; }
+  const j = await r.json();
+  alert(`Re-queued as ${j.id}. Transcript is cached, so this run skips transcription.`);
+  tick();
+}
+
+async function files() {
+  try {
+    const r = await fetch("/api/files");
+    if (!r.ok) return;
+    const { files, usage } = await r.json();
+    document.getElementById("files").innerHTML = files.length
+      ? files.map(f => `<div class="kv">
+          <span style="word-break:break-all">${esc(f.name)}<br>
+            <span class="muted">${f.gb} GB · ${f.has_transcript ? "transcript cached" : "no transcript"}</span></span>
+          <span style="text-align:right">${f.deletes_in_hours > 0
+            ? `<span class="muted">auto-deletes in<br><b>${f.deletes_in_hours}h</b></span>`
+            : `<span style="color:var(--warn)">due for deletion</span>`}</span></div>`).join("")
+        + `<div class="muted" style="margin-top:10px">sources ${usage.sources_gb} GB · clips ${usage.clips_gb} GB · approved ${usage.approved_gb} GB · ${usage.disk_free_gb} GB free</div>`
+      : `<div class="muted">No raw videos on disk.</div>`;
+  } catch (e) {}
 }
 
 async function tick() {
@@ -80,7 +143,9 @@ async function netInfo() {
   } catch (e) { /* non-fatal */ }
 }
 netInfo();
+files();
 tick();
+setInterval(files, 30000);
 setInterval(tick, 2000);
 setInterval(netInfo, 30000);
 </script>

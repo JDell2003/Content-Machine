@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}Chat — Content Machine{% endblock %}
+{% block n4 %}on{% endblock %}
+{% block body %}
+<div class="card">
+  <div class="row" style="align-items:center">
+    <div style="flex:2"><h1 style="margin:0">Talk to it</h1>
+      <div class="muted" id="tinfo">no thread</div></div>
+    <div style="flex:1;text-align:right">
+      <button class="ghost" style="width:auto;min-height:40px" onclick="newThread()">+ New</button>
+    </div>
+  </div>
+  <div style="height:8px"></div>
+  <select id="picker" style="width:100%;min-height:44px;background:var(--panel2);color:var(--ink);
+    border:1px solid var(--line);border-radius:10px;padding:0 10px" onchange="openThread(this.value)"></select>
+</div>
+
+<div id="log"></div>
+
+<div class="card">
+  <textarea id="msg" rows="3" placeholder="e.g. punch-ins feel too aggressive, cap at one per clip and make them 8%"
+    style="width:100%;background:var(--panel2);color:var(--ink);border:1px solid var(--line);
+    border-radius:12px;padding:12px;font:inherit;font-size:16px"></textarea>
+  <div style="height:8px"></div>
+  <button id="send" onclick="send()">Send</button>
+  <div id="err" class="muted" style="margin-top:8px"></div>
+</div>
+
+<script>
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let TID = localStorage.getItem("cm_thread") || null;
+
+async function api(url, opts) {
+  const r = await fetch(url, opts);
+  if (r.status === 401) { location.href = "/login"; throw new Error("locked"); }
+  if (!r.ok) throw new Error((await r.text()).slice(0, 300));
+  return r.json();
+}
+
+async function refreshPicker() {
+  const { threads } = await api("/api/chat/threads");
+  const p = document.getElementById("picker");
+  p.innerHTML = threads.length
+    ? threads.map(t => `<option value="${t.id}" ${t.id===TID?"selected":""}>${esc(t.title)} (${t.turns})</option>`).join("")
+    : `<option value="">no threads yet</option>`;
+  if (!TID && threads.length) { TID = threads[0].id; p.value = TID; }
+}
+
+async function newThread() {
+  const t = await api("/api/chat/threads", {
+    method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({})
+  });
+  TID = t.id; localStorage.setItem("cm_thread", TID);
+  await refreshPicker(); await openThread(TID);
+}
+
+async function openThread(id) {
+  if (!id) return;
+  TID = id; localStorage.setItem("cm_thread", TID);
+  const t = await api(`/api/chat/threads/${TID}`);
+  document.getElementById("tinfo").textContent =
+    `${t.turns.length} turns${t.tokens_last ? " · last pack ~" + (t.tokens_last/1000).toFixed(1) + "k tokens" : ""}`;
+  document.getElementById("log").innerHTML = t.turns.map(turn => {
+    const mine = turn.role === "jason";
+    const foot = (!mine && turn.context)
+      ? `<div class="muted" style="margin-top:8px;font-size:12px">context: ${esc((turn.context||[]).join(" + "))} · ~${((turn.tokens||0)/1000).toFixed(1)}k tokens</div>` : "";
+    const d = turn.diff ? diffBlock(turn.diff) : "";
+    return `<div class="card" style="${mine ? "border-color:var(--accent)" : ""}">
+      <div class="muted" style="font-size:12px;font-weight:800;letter-spacing:.06em">${mine ? "YOU" : "MACHINE"}</div>
+      <div style="white-space:pre-wrap;margin-top:6px">${esc(turn.text)}</div>${d}${foot}</div>`;
+  }).join("");
+  window.scrollTo(0, document.body.scrollHeight);
+}
+
+function diffBlock(d) {
+  const done = d.status !== "pending";
+  return `<div class="card" style="margin:12px 0 0;background:var(--panel2)">
+    <div class="muted" style="font-size:12px;font-weight:800">PROPOSED CHANGE — ${esc(d.file)}</div>
+    <div class="muted" style="margin:4px 0 8px">${esc(d.why || "")}</div>
+    <pre style="margin:0">- ${esc(String(d.find||"").slice(0,600))}\n+ ${esc(String(d.replace||"").slice(0,600))}</pre>
+    <div style="height:10px"></div>
+    ${done ? `<div class="pill ${d.status==="approved"?"done":"failed"}">${esc(d.status)}</div>`
+      : `<div class="row">
+          <button class="ok" onclick="decideDiff('${d.id}',true)">Approve</button>
+          <button class="bad" onclick="decideDiff('${d.id}',false)">Reject</button>
+         </div>`}
+  </div>`;
+}
+
+async function decideDiff(id, approve) {
+  let note = "";
+  if (!approve) { note = prompt("Why not?") || ""; }
+  try {
+    const r = await api(`/api/chat/threads/${TID}/diff/${id}`, {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ approve, note })
+    });
+    if (r.status === "approved") alert(`Applied to ${r.file}\nbackup: ${r.backup}`);
+  } catch (e) { alert(e.message); }
+  await openThread(TID);
+}
+
+async function send() {
+  const box = document.getElementById("msg");
+  const text = box.value.trim();
+  if (!text) return;
+  if (!TID) await newThread();
+  const btn = document.getElementById("send");
+  btn.disabled = true; btn.textContent = "Thinking…";
+  document.getElementById("err").textContent = "";
+  try {
+    await api(`/api/chat/threads/${TID}/send`, {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ message: text })
+    });
+    box.value = "";
+    await openThread(TID);
+    await refreshPicker();
+  } catch (e) {
+    document.getElementById("err").textContent = e.message;
+  } finally {
+    btn.disabled = false; btn.textContent = "Send";
+  }
+}
+
+(async () => { await refreshPicker(); if (TID) await openThread(TID); })();
+</script>
+{% endblock %}
