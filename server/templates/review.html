@@ -141,6 +141,18 @@ function clipCard(job, c) {
 // sixty subtly-wrong clips at once.
 let LOOK = null, LOOKCLIP = null, PREVT = null;
 
+// Measured 1.9x realtime per clip (seek + pre-cut + loudness analysis + encode).
+// A flat "45s" was the ORIGINAL render's figure, which was only that low because
+// it ran three clips at once — quoting it here understated a 2.5-min clip by 6x.
+let JOBCACHE = { clips: [] };
+
+function etaFor(clipId) {
+  const c = (JOBCACHE.clips || []).find(x => x.id === clipId);
+  return Math.max(20, Math.round((c && +c.duration_s ? +c.duration_s : 60) * 1.9));
+}
+const clipEta = () => etaFor(LOOKCLIP);
+const reburnEta = (id) => etaFor(id);
+
 async function loadLook() {
   const host = document.getElementById("lookbox");
   if (!JOB_ID) { host.textContent = "Open a job to use this."; return; }
@@ -150,6 +162,7 @@ async function loadLook() {
   LOOK = await lr.json();
   const plan = pr.ok ? await pr.json() : { clips: 0, lossless: false, note: "" };
   const job = jr.ok ? await jr.json() : { clips: [] };
+  JOBCACHE = job;
   const clips = (job.clips || []).filter(c => c.path);
   if (!clips.length) { host.textContent = "No rendered clips yet."; return; }
   LOOKCLIP = LOOKCLIP || clips[0].id;
@@ -186,9 +199,9 @@ async function loadLook() {
     <div style="height:14px"></div>
     <div class="muted" style="${plan.lossless ? "" : "color:var(--warn)"}">${esc(plan.note)}</div>
     <div style="height:10px"></div>
-    <button class="ghost" onclick="applyLook('clip')" id="lk1">Apply to this clip only (~45s)</button>
+    <button class="ghost" onclick="applyLook('clip')" id="lk1">Apply to this clip only (~${clipEta()}s)</button>
     <div style="height:6px"></div>
-    <button class="ghost" onclick="applyLook('job')" id="lkall">Apply to all ${plan.clips} clips (~${plan.eta_minutes} min)</button>
+    <button class="ghost" onclick="applyLook('job')" id="lkall">Apply to all ${plan.clips} clips (~${plan.eta_minutes} min, runs in background)</button>
     <div id="lkprog" class="muted" style="margin-top:8px"></div>`;
   refreshPreview();
   pollRelook();
@@ -241,7 +254,7 @@ async function applyLook(scope) {
   if (r.status === 401) { location.href = "/login"; return; }
   if (!r.ok) { alert((await r.text()).slice(0, 250)); btn.disabled = false; return; }
   if (scope === "job") { pollRelook(); }
-  else { btn.disabled = false; btn.textContent = "Apply to this clip only (~45s)"; await load(); }
+  else { btn.disabled = false; btn.textContent = `Apply to this clip only (~${clipEta()}s)`; await load(); }
 }
 
 // Runs server-side on its own thread, so closing the tab doesn't stop it.
@@ -353,7 +366,7 @@ function dropCorrection(k) {
 loadCapset();
 
 // --- captions ------------------------------------------------------------
-// Burned-in text is pixels, so every edit here costs a re-encode (~45s). The UI
+// Burned-in text is pixels, so every edit here costs a re-encode. The UI
 // is built to make you edit once and save once rather than nudge repeatedly.
 const CUES = {};
 
@@ -377,7 +390,7 @@ async function loadCues(id) {
     <label class="muted" style="display:block">Height off the bottom
       <input type="range" min="20" max="420" value="${CAPSET.margin_wide}" style="width:100%" id="rmg-${id}"></label>
     <div class="muted" style="margin:6px 0">size <b id="sz-${id}">${CAPSET.size_wide}</b>
-      · re-burning takes about 45s</div>
+      · re-burning takes about ${reburnEta(id)}s</div>
     <button class="ghost" id="cbtn-${id}" onclick="saveCues('${id}')">Save &amp; re-burn this clip</button>
     <button class="ghost" style="margin-top:6px" onclick="saveStyleAll('${id}')">Use this size/position for ALL future clips</button>
   ` : "No captions on this clip.";
@@ -525,6 +538,7 @@ async function load() {
   const r = await fetch(`/api/jobs/${JOB_ID}`);
   if (r.status === 401) { location.href = "/login"; return; }
   const job = await r.json();
+  JOBCACHE = job;
   const clips = job.clips || [];
   const ok = clips.filter(c => c.decision === "approved").length;
   document.getElementById("counts").textContent =

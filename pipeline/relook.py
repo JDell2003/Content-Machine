@@ -46,9 +46,23 @@ def plan(job: dict) -> dict:
                  if src else
                  "The source recording has been swept (48h retention). Re-grading now "
                  "would re-encode the finished clips, costing one generation of quality."),
-        # Measured ~45s/clip on NVENC at 4K.
-        "eta_minutes": round(len(clips) * 45 / 60) if clips else 0,
+        "eta_minutes": eta_minutes(clips),
     }
+
+
+# MEASURED, not guessed: a 148.9s 4K portrait clip took 277s end to end
+# (seek + lossless pre-cut + two-pass loudness analysis + NVENC encode).
+# That is ~1.9x realtime per clip on one worker. An early version of this file
+# claimed 45s/clip — the figure from the ORIGINAL render, which was only that
+# fast because it ran three clips in parallel. Quoting it here would have told
+# you "45 minutes" for a job that actually takes over four hours.
+SECONDS_PER_SECOND_OF_CLIP = 1.9
+WORKERS = 3
+
+
+def eta_minutes(clips: list[dict]) -> int:
+    total = sum(float(c.get("duration_s") or 60) for c in clips)
+    return max(1, round(total * SECONDS_PER_SECOND_OF_CLIP / WORKERS / 60)) if clips else 0
 
 
 def one(job: dict, clip: dict, look: dict) -> dict:
@@ -133,24 +147,44 @@ def run_all(job_id: str, look: dict, load: Callable, update: Callable) -> dict:
              "errors": 0, "current": ""}
     _RUNNING[job_id] = state
 
-    def _work() -> None:
-        try:
-            for c in clips:
-                if state["cancelled"]:
+    lock = threading.Lock()
+
+    def _one_clip(cid: str) -> None:
+        if state["cancelled"]:
+            return
+        # Re-read under the lock: every worker mutates the same clips list, and
+        # a stale read would resurrect a clip another worker already updated.
+        with lock:
+            fresh = load(job_id) or job
+            target = next((x for x in fresh.get("clips", [])
+                           if x.get("id") == cid), None)
+            if target is None:
+                return
+            state["current"] = target.get("hook") or cid
+            work_copy = dict(target)
+
+        one(fresh, work_copy, look)
+
+        with lock:
+            latest = load(job_id) or fresh
+            for i, x in enumerate(latest.get("clips", [])):
+                if x.get("id") == cid:
+                    latest["clips"][i] = work_copy
                     break
-                state["current"] = c.get("hook") or c.get("id") or ""
-                fresh = load(job_id) or job
-                target = next((x for x in fresh.get("clips", [])
-                               if x.get("id") == c.get("id")), None)
-                if target is None:
-                    continue
-                one(fresh, target, look)
-                if target.get("relook_error"):
-                    state["errors"] += 1
-                state["done_count"] += 1
-                # Persist after every clip so progress survives a crash and the
-                # review page shows clips updating one at a time.
-                update(job_id, clips=fresh["clips"])
+            if work_copy.get("relook_error"):
+                state["errors"] += 1
+            state["done_count"] += 1
+            # Persist after every clip so progress survives a crash and the
+            # review page shows clips updating as they land.
+            update(job_id, clips=latest["clips"])
+
+    def _work() -> None:
+        # Three at a time, same as the original render. Serial was 1.9x realtime
+        # per clip, which turned a 60-clip job into a four-hour wait.
+        from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+        try:
+            with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+                list(pool.map(_one_clip, [c.get("id") for c in clips]))
         finally:
             state["done"] = True
             state["current"] = ""
