@@ -193,6 +193,36 @@ def _keep_filters(keeps: list[tuple[float, float]], dur: float) -> tuple[str, st
     return f"select='{gate}',setpts=N/FRAME_RATE/TB", f"aselect='{gate}',asetpts=N/SR/TB"
 
 
+# Longest edge of a delivered clip. Every platform this feeds caps at 1080x1920
+# (Reels, TikTok, Shorts) or 1920x1080 (YouTube landscape), so rendering the
+# native 4K costs 4x the pixels through every filter and the encoder and not one
+# viewer ever sees the difference.
+#
+# MEASURED on a 30s 4K portrait clip: 75.3s at native 4K vs 30.5s capped
+# = 2.5x faster, output 1080x1920. Not the 4x you'd predict from pixel count,
+# because decoding the 4K HEVC source costs the same either way — and GPU decode
+# did NOT help (31.9s, slightly worse than CPU).
+MAX_DELIVERY_EDGE = 1920
+
+
+def _delivery_scale(source: Path) -> str:
+    """Cap the long edge, preserving aspect and orientation. Never upscales.
+
+    A square bounding box is the trick: fitting inside 1920x1920 with
+    force_original_aspect_ratio=decrease turns 2160x3840 into 1080x1920 and
+    3840x2160 into 1920x1080, with no conditional expressions. That matters —
+    commas inside ffmpeg if() calls have broken this filter chain before.
+    """
+    w, h = probe_dims(source)
+    cap = MAX_DELIVERY_EDGE
+    # probe_dims reports pre-rotation dimensions on iPhone footage, but the long
+    # edge is the same either way, so this test is orientation-proof.
+    if not w or not h or max(w, h) <= cap:
+        return "scale=trunc(iw/2)*2:trunc(ih/2)*2"
+    return (f"scale={cap}:{cap}:force_original_aspect_ratio=decrease"
+            f":force_divisible_by=2:flags=bicubic")
+
+
 def render_wide(source: Path, out: Path, start_s: float, end_s: float,
                 punch_ins: Optional[list[dict]] = None,
                 keeps: Optional[list[tuple[float, float]]] = None,
@@ -208,7 +238,7 @@ def render_wide(source: Path, out: Path, start_s: float, end_s: float,
         pf = _punch_filter(punch_ins, dur)
         if pf:
             vf.append(pf)
-    vf.append("scale=trunc(iw/2)*2:trunc(ih/2)*2")
+    vf.append(_delivery_scale(source))
     # Grade BEFORE captions: the caption is already the colour we chose, and
     # running contrast/saturation over it would shift it and crunch the edges.
     if grade:

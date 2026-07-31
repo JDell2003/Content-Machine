@@ -282,7 +282,7 @@ def run_pipeline(*, job: dict, info: dict, report: Callable[..., None], cfg) -> 
             afilter, ainfo = audio_fx.build_chain(
                 work, w_start, c["duration_s"],
                 preset=look["audio_preset"], intensity=float(look["audio_intensity"]))
-            grade = color.filter_chain(c_preset, c_amt)
+            grade = color.fast_filter_chain(c_preset, c_amt)
             clip["grade"] = color.describe(c_preset, c_amt)
             # Silence cutting is OFF by default. Even tuned conservatively it
             # clipped words on real speech, and 0.8s saved is not worth a clip

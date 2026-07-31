@@ -34,10 +34,27 @@ def source_for(job: dict) -> Optional[Path]:
     return p if p.exists() else None
 
 
-def plan(job: dict) -> dict:
+def select(job: dict, scope: str = "all") -> list[dict]:
+    """Which clips a batch should touch.
+
+    This is the only lever with the right order of magnitude. MEASURED on real
+    clips: 1.80x realtime aggregate, so 131 minutes of footage is ~73 minutes of
+    re-rendering no matter how the encoder is tuned. Re-grading 20 kept clips
+    instead of all 60 is a 3x saving that costs nothing, because the clips you
+    rejected are never going to be posted.
+    """
+    clips = [c for c in job.get("clips", []) if c.get("path")]
+    if scope == "approved":
+        return [c for c in clips if c.get("decision") == "approved"]
+    if scope == "keeping":
+        return [c for c in clips if c.get("decision") != "rejected"]
+    return clips
+
+
+def plan(job: dict, scope: str = "all") -> dict:
     """Can we re-render losslessly, or only re-encode what's left?"""
     src = source_for(job)
-    clips = [c for c in job.get("clips", []) if c.get("path")]
+    clips = select(job, scope)
     return {
         "clips": len(clips),
         "lossless": src is not None,
@@ -56,13 +73,21 @@ def plan(job: dict) -> dict:
 # claimed 45s/clip — the figure from the ORIGINAL render, which was only that
 # fast because it ran three clips in parallel. Quoting it here would have told
 # you "45 minutes" for a job that actually takes over four hours.
-SECONDS_PER_SECOND_OF_CLIP = 1.9
 WORKERS = 3
+# MEASURED end to end on 3 real clips (299s of footage) running 3-up: 166s wall
+# = 1.80x realtime AGGREGATE, errors none, output 1080x1920.
+#
+# Do NOT divide a per-clip figure by WORKERS to get this. An earlier version did
+# exactly that and under-quoted the job by 6x. Parallelism barely helps here:
+# one clip alone measured 1.86x, three together 1.80x, because every worker is
+# pre-cutting ~280MB out of an 11.5GB source and they contend on disk long
+# before the GPU is busy.
+AGGREGATE_REALTIME = 1.80
 
 
 def eta_minutes(clips: list[dict]) -> int:
     total = sum(float(c.get("duration_s") or 60) for c in clips)
-    return max(1, round(total * SECONDS_PER_SECOND_OF_CLIP / WORKERS / 60)) if clips else 0
+    return max(1, round(total / AGGREGATE_REALTIME / 60)) if clips else 0
 
 
 def one(job: dict, clip: dict, look: dict) -> dict:
@@ -71,7 +96,7 @@ def one(job: dict, clip: dict, look: dict) -> dict:
     srt = out.with_suffix(".srt")
     src = source_for(job)
 
-    grade = color.filter_chain(look["color_preset"], float(look["color_intensity"]))
+    grade = color.fast_filter_chain(look["color_preset"], float(look["color_intensity"]))
 
     if src is not None:
         # Same path the original render took: lossless pre-cut, then one encode.
@@ -136,12 +161,13 @@ def status(job_id: str) -> Optional[dict]:
     return _RUNNING.get(job_id)
 
 
-def run_all(job_id: str, look: dict, load: Callable, update: Callable) -> dict:
+def run_all(job_id: str, look: dict, load: Callable, update: Callable,
+            scope: str = "all") -> dict:
     if job_id in _RUNNING and not _RUNNING[job_id].get("done"):
         return _RUNNING[job_id]
 
     job = load(job_id)
-    clips = [c for c in (job or {}).get("clips", []) if c.get("path")]
+    clips = select(job or {}, scope)
     state = {"job_id": job_id, "total": len(clips), "done_count": 0,
              "done": False, "cancelled": False, "started_at": time.time(),
              "errors": 0, "current": ""}

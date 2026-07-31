@@ -296,7 +296,7 @@ async def preview_frame(job_id: str, clip_id: str, preset: str = "office",
     src, at = _preview_src(job, clip)
 
     vf = [f"scale={max(240, min(1280, int(width)))}:-2"]
-    chain = _c.filter_chain(preset, float(intensity))
+    chain = _c.fast_filter_chain(preset, float(intensity))
     if chain:
         vf.append(chain)
     dest = config.DATA / "tmp" / f"prev_{job_id}_{clip_id}_{preset}_{intensity}.jpg"
@@ -338,12 +338,13 @@ async def preview_audio(job_id: str, clip_id: str, preset: str = "office",
 
 
 @app.get("/api/jobs/{job_id}/relook")
-async def relook_plan(job_id: str):
+async def relook_plan(job_id: str, scope: str = "all"):
     from pipeline import relook as _rl  # noqa: PLC0415
     job = jobs.load(job_id)
     if not job:
         raise HTTPException(404, "no such job")
-    return {**_rl.plan(job), "running": _rl.status(job_id)}
+    return {**_rl.plan(job, scope), "running": _rl.status(job_id),
+            "counts": {s: len(_rl.select(job, s)) for s in ("all", "keeping", "approved")}}
 
 
 @app.post("/api/jobs/{job_id}/relook")
@@ -361,7 +362,8 @@ async def relook_apply(job_id: str, body: dict = Body(...)):
         _l.save(look)
 
     if body.get("scope") == "job":
-        return _rl.run_all(job_id, look, jobs.load, jobs.update)
+        return _rl.run_all(job_id, look, jobs.load, jobs.update,
+                           scope=str(body.get("clip_scope") or "all"))
 
     clip = _find_clip(job, str(body.get("clip_id") or ""))
     _rl.one(job, clip, look)
