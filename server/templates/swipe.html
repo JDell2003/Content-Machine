@@ -39,21 +39,33 @@
 <!-- --------------------------------------------------------------- calendar -->
 <div id="pane-cal" style="display:none">
   <div class="card">
-    <h2>Posting schedule</h2>
-    <p class="muted">Approved clips get a real date, in the order you approved them.
-      Nothing posts by itself — this tells you what goes out when, so volume
-      becomes a drumbeat instead of one big dump.</p>
-    <div id="schedstats" class="muted"></div>
-    <div style="height:12px"></div>
-    <div class="muted" style="font-weight:700;margin-bottom:6px">Times per day</div>
+    <h2>Posting cadence</h2>
+    <p class="muted">The cadence is a <b>ceiling, not a quota</b>. Approve twenty clips
+      and the queue runs forward into future days — it never floods today to clear a
+      backlog. And a slot with no approved clip stays empty. That is a normal outcome,
+      not a hole to fill.</p>
+
+    <div class="muted" style="font-weight:700;margin:14px 0 6px">Phase</div>
+    <div id="phases" class="row" style="gap:6px;flex-wrap:wrap"></div>
+    <div id="capnote" class="muted" style="margin-top:8px;color:var(--warn)"></div>
+
+    <div class="muted" style="font-weight:700;margin:14px 0 6px">Slot times</div>
     <div id="times"></div>
     <div class="row" style="gap:6px;margin-top:8px">
-      <input id="newtime" type="time" value="12:00" style="flex:1">
+      <input id="newtime" type="time" value="11:30" style="flex:1">
       <button class="ghost" style="width:auto;padding:8px 14px" onclick="addTime()">Add</button>
     </div>
+
     <div class="muted" style="font-weight:700;margin:14px 0 6px">Days</div>
     <div id="days" class="row" style="gap:4px;flex-wrap:wrap"></div>
+
+    <label class="muted" style="display:block;margin-top:14px">Minimum gap between posts
+      <b id="gaplab"></b>
+      <input type="range" min="0" max="12" step="1" id="gap" style="width:100%" onchange="saveSched({min_gap_hours:+this.value})"></label>
+
+    <div id="schedstats" class="muted" style="margin-top:12px"></div>
   </div>
+  <div id="warnbox"></div>
   <div id="cal"></div>
 </div>
 
@@ -251,28 +263,57 @@ async function loadCal() {
   if (!r.ok) return;
   SCHED = await r.json();
   const s = SCHED.settings;
-  document.getElementById("schedstats").innerHTML =
-    `<b>${SCHED.queued}</b> approved and waiting · <b>${SCHED.per_day}/day</b> ·
-     that's <b>${SCHED.days_of_runway} days</b> of runway${SCHED.posted ? ` · ${SCHED.posted} marked posted` : ""}`;
-  document.getElementById("times").innerHTML = s.times.map(t =>
+
+  document.getElementById("phases").innerHTML = Object.entries(SCHED.phases).map(([k, l]) =>
+    `<button class="${k === SCHED.phase ? "" : "ghost"}" style="flex:1;min-width:120px;font-size:13px"
+       onclick="saveSched({phase:'${k}'})">${esc(l)}</button>`).join("");
+  document.getElementById("capnote").textContent = SCHED.capacity_note || "";
+  document.getElementById("gap").value = SCHED.min_gap_hours ?? 5;
+  document.getElementById("gaplab").textContent = (SCHED.min_gap_hours ?? 5) + "h";
+  document.getElementById("times").innerHTML = s.slots.map(t =>
     `<span class="tag" style="cursor:pointer" onclick="dropTime('${t}')">${t} ✕</span>`).join(" ");
   document.getElementById("days").innerHTML = DAYNAMES.map((n, i) =>
     `<button class="${s.days.includes(i) ? "" : "ghost"}" style="flex:1;min-width:56px;padding:8px 0"
        onclick="toggleDay(${i})">${n}</button>`).join("");
 
-  document.getElementById("cal").innerHTML = SCHED.by_day.length
-    ? SCHED.by_day.map(d => `<div class="card" style="padding:12px">
-        <b>${new Date(d.day + "T00:00").toLocaleDateString(undefined,{weekday:"long",month:"short",day:"numeric"})}</b>
-        ${d.items.map(it => `<div class="cal-slot">
-            <span class="cal-time">${it.scheduled_time}</span>
-            <span style="flex:1">${esc((it.hook || "").slice(0, 70))}
-              <div class="muted" style="font-size:12px">${it.profile || ""}${it.duration_s ? " · " + Math.round(it.duration_s) + "s" : ""}</div></span>
-            <button class="ghost" style="width:auto;padding:4px 10px;font-size:12px"
-              onclick="markPosted('${it.job_id}','${it.clip_id}')">posted</button>
-          </div>`).join("")}
-      </div>`).join("")
-    : `<div class="card"><p class="muted">Nothing approved yet. Swipe right on a few and
-        they'll land here with real dates.</p></div>`;
+  // Queue depth, framed as being AHEAD. Never as a backlog to clear.
+  document.getElementById("schedstats").innerHTML =
+    `<b>${SCHED.queued}</b> scheduled · ceiling <b>${SCHED.per_day}/day</b> · ` +
+    `<b>${SCHED.days_of_runway}</b> days of runway` +
+    (SCHED.beyond_window ? ` · <b>${SCHED.beyond_window}</b> queued beyond the next 14 days (you're ahead)` : "");
+
+  document.getElementById("warnbox").innerHTML = (SCHED.warnings || []).length
+    ? `<div class="card" style="padding:12px"><div class="muted" style="color:var(--warn)">
+         ⚑ ${SCHED.warnings.length} back-to-back from the same source video — fine if deliberate,
+         worth a shuffle if not. Warning only, nothing is blocked.</div></div>` : "";
+
+  // Group slots by day. Empty slots render plainly — no colour, no count, no nudge.
+  const byDay = {};
+  for (const slot of SCHED.calendar) (byDay[slot.day] = byDay[slot.day] || []).push(slot);
+  document.getElementById("cal").innerHTML = Object.keys(byDay).map(day => {
+    const nice = new Date(day + "T00:00").toLocaleDateString(undefined,
+      { weekday: "long", month: "short", day: "numeric" });
+    return `<div class="card" style="padding:12px"><b>${nice}</b>
+      ${byDay[day].map(slot => slot.clip ? `<div class="cal-slot">
+          <span class="cal-time">${slot.time}</span>
+          <span style="flex:1">${esc((slot.clip.hook || "").slice(0, 66))}
+            <div class="muted" style="font-size:12px">${esc(slot.clip.source_name || "")}</div></span>
+          <button class="ghost" style="width:auto;padding:4px 9px;font-size:12px"
+            onclick="unschedule('${slot.clip.job_id}','${slot.clip.clip_id}')">remove</button>
+          <button class="ghost" style="width:auto;padding:4px 9px;font-size:12px"
+            onclick="markPosted('${slot.clip.job_id}','${slot.clip.clip_id}')">posted</button>
+        </div>` : `<div class="cal-slot"><span class="cal-time">${slot.time}</span>
+          <span class="muted" style="flex:1">open</span></div>`).join("")}
+    </div>`;
+  }).join("");
+}
+
+async function unschedule(job_id, clip_id) {
+  if (!confirm("Take this clip out of the queue? It goes back to undecided.")) return;
+  await fetch("/api/schedule/unschedule", { method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ job_id, clip_id }) });
+  loadCal(); loadDeck();
 }
 
 async function saveSched(patch) {
@@ -281,10 +322,10 @@ async function saveSched(patch) {
   if (r.ok) { SCHED = await r.json(); loadCal(); }
 }
 function addTime() { const t = document.getElementById("newtime").value;
-  if (t) saveSched({ times: [...SCHED.settings.times, t] }); }
-function dropTime(t) { const left = SCHED.settings.times.filter(x => x !== t);
+  if (t) saveSched({ slots: [...SCHED.settings.slots, t] }); }
+function dropTime(t) { const left = SCHED.settings.slots.filter(x => x !== t);
   if (!left.length) return alert("Keep at least one time.");
-  saveSched({ times: left }); }
+  saveSched({ slots: left }); }
 function toggleDay(i) { const d = SCHED.settings.days.includes(i)
     ? SCHED.settings.days.filter(x => x !== i) : [...SCHED.settings.days, i];
   if (!d.length) return alert("Keep at least one day.");

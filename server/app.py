@@ -382,16 +382,18 @@ async def relook_cancel(job_id: str):
 
 # ------------------------------------------------------------------ schedule
 @app.get("/api/schedule")
-async def schedule_get():
+async def schedule_get(days: int = 14):
     from pipeline import schedule as _s  # noqa: PLC0415
-    return _s.build(jobs.all_jobs())
+    return {**_s.build(jobs.all_jobs(), days_ahead=max(1, min(60, days))),
+            "phases": {k: v["label"] for k, v in _s.PHASES.items()}}
 
 
 @app.post("/api/schedule")
 async def schedule_set(body: dict = Body(...)):
     from pipeline import schedule as _s  # noqa: PLC0415
     _s.save(body or {})
-    return _s.build(jobs.all_jobs())
+    return {**_s.build(jobs.all_jobs()),
+            "phases": {k: v["label"] for k, v in _s.PHASES.items()}}
 
 
 @app.post("/api/schedule/posted")
@@ -404,6 +406,39 @@ async def schedule_mark_posted(body: dict = Body(...)):
     clip = _find_clip(job, str(body.get("clip_id") or ""))
     clip["posted"] = bool(body.get("posted", True))
     clip["posted_at"] = time.time() if clip["posted"] else None
+    jobs.update(job["id"], clips=job["clips"])
+    from pipeline import schedule as _s  # noqa: PLC0415
+    return _s.build(jobs.all_jobs())
+
+
+@app.post("/api/schedule/pin")
+async def schedule_pin(body: dict = Body(...)):
+    """Drag-to-reorder: pin a clip to an explicit slot, or clear the pin so it
+    rejoins the flowing queue. A pinned clip keeps its slot when others move."""
+    job = jobs.load(str(body.get("job_id") or ""))
+    if not job:
+        raise HTTPException(404, "no such job")
+    clip = _find_clip(job, str(body.get("clip_id") or ""))
+    at = str(body.get("at") or "").strip()
+    if at:
+        clip["scheduled_at"] = at
+    else:
+        clip.pop("scheduled_at", None)
+    jobs.update(job["id"], clips=job["clips"])
+    from pipeline import schedule as _s  # noqa: PLC0415
+    return _s.build(jobs.all_jobs())
+
+
+@app.post("/api/schedule/unschedule")
+async def schedule_unschedule(body: dict = Body(...)):
+    """Take a clip out of the queue entirely by moving it back to pending."""
+    job = jobs.load(str(body.get("job_id") or ""))
+    if not job:
+        raise HTTPException(404, "no such job")
+    clip = _find_clip(job, str(body.get("clip_id") or ""))
+    clip["decision"] = "pending"
+    clip.pop("approved_at", None)
+    clip.pop("scheduled_at", None)
     jobs.update(job["id"], clips=job["clips"])
     from pipeline import schedule as _s  # noqa: PLC0415
     return _s.build(jobs.all_jobs())
