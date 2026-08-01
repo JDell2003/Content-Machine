@@ -11,10 +11,7 @@
 <!-- ------------------------------------------------------------- swipe deck -->
 <div id="pane-deck">
   <div class="card" style="padding:12px">
-    <div class="row" style="align-items:center">
-      <div style="flex:1" class="muted" id="deckcount">loading…</div>
-      <button class="ghost" style="width:auto;padding:6px 12px" onclick="openEditor()">Edit this clip</button>
-    </div>
+    <div class="muted" id="deckcount">loading…</div>
   </div>
 
   <div id="stage" class="sw-stage">
@@ -235,15 +232,6 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "ArrowRight") decide("approved");
   if (e.key === "ArrowLeft") decide("rejected");
 });
-
-// The full editor is a separate build. Until it lands this opens the controls
-// that DO exist for this clip today — captions, reframe, look & sound — rather
-// than a dead link.
-function openEditor() {
-  const c = cur();
-  if (!c) return;
-  location.href = `/review/${c.job_id}#clip-${encodeURIComponent(c.id)}`;
-}
 
 // ------------------------------------------------------------------ calendar
 function showTab(which) {
