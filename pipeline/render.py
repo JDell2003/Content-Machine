@@ -227,8 +227,16 @@ def render_wide(source: Path, out: Path, start_s: float, end_s: float,
                 punch_ins: Optional[list[dict]] = None,
                 keeps: Optional[list[tuple[float, float]]] = None,
                 afilter: str = "", subs_path: Optional[Path] = None,
-                grade: str = "", style_override: Optional[dict] = None) -> Path:
-    """16:9 at source resolution, one encode from the original file."""
+                grade: str = "", style_override: Optional[dict] = None,
+                crop: str = "", delivery: str = "") -> Path:
+    """One encode from the original file.
+
+    `crop` reframes to a target aspect and `delivery` overrides the output size.
+    Both live HERE rather than in a second pass, because cropping a finished clip
+    would put a second generation of compression on it. Order matters:
+    crop -> scale -> grade -> captions, so the caption is sized against the FINAL
+    frame and never gets cropped off or rescaled after it's drawn.
+    """
     dur = max(0.2, end_s - start_s)
     vf: list[str] = []
     vsel, asel = _keep_filters(keeps or [], dur)
@@ -238,7 +246,9 @@ def render_wide(source: Path, out: Path, start_s: float, end_s: float,
         pf = _punch_filter(punch_ins, dur)
         if pf:
             vf.append(pf)
-    vf.append(_delivery_scale(source))
+    if crop:
+        vf.append(crop)
+    vf.append(delivery or _delivery_scale(source))
     # Grade BEFORE captions: the caption is already the colour we chose, and
     # running contrast/saturation over it would shift it and crunch the edges.
     if grade:

@@ -40,7 +40,27 @@ DEFAULTS = {
     "uppercase": True,
     "group": 4,               # words per caption card
     "corrections": {},        # {"wrong": "right"} applied case-insensitively
+    # Plain #RRGGBB here; converted to ASS's &HBBGGRR on the way out.
+    "color": "#FFFFFF",
+    "outline_color": "#000000",
 }
+
+
+def _ass_colour(hex_rgb: str) -> str:
+    """#RRGGBB -> &H00BBGGRR.
+
+    ASS stores colour BYTE-REVERSED (blue first) with an alpha byte in front.
+    Feeding it plain RGB silently swaps red and blue — captions come out cyan
+    when you asked for orange — so this conversion is not optional.
+    """
+    h = str(hex_rgb or "").strip().lstrip("#")
+    if len(h) != 6:
+        return "&H00FFFFFF"
+    try:
+        r, g, b = h[0:2], h[2:4], h[4:6]
+        return f"&H00{b}{g}{r}".upper()
+    except (ValueError, IndexError):
+        return "&H00FFFFFF"
 
 
 def load() -> dict:
@@ -99,7 +119,8 @@ def force_style(vertical: bool, override: Optional[dict] = None) -> str:
     size = s["size_vertical"] if vertical else s["size_wide"]
     margin = s["margin_vertical"] if vertical else s["margin_wide"]
     return (f"FontName=Arial Black,Fontsize={int(size)},Bold={1 if s['bold'] else 0},"
-            f"PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,"
+            f"PrimaryColour={_ass_colour(s['color'])},"
+            f"OutlineColour={_ass_colour(s['outline_color'])},BorderStyle=1,"
             f"Outline={int(s['outline'])},Shadow=1,Alignment=2,MarginV={int(margin)}")
 
 

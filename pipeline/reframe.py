@@ -23,6 +23,7 @@ where write_karaoke_srt puts it), and the UI warns before saving.
 """
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -43,14 +44,49 @@ def _ffmpeg() -> str:
 
 
 def probe(path: Path) -> tuple[int, int]:
-    """-> (width, height) as displayed. ffprobe already applies rotation here."""
+    """-> (width, height) as displayed. ffprobe already applies rotation here.
+
+    Parsed defensively on purpose. iPhone .MOV files carry a second video track
+    (the preview/thumbnail image), and ffprobe can emit more than one row even
+    with -select_streams v:0 — which made the old `w, _, h = out.partition("x")`
+    blow up on int('2160x'). Worse, the caller caught ValueError and silently
+    fell back to "no crop", so choosing an aspect ratio did nothing at all with
+    no error anywhere. Take the first row, first two integers, and nothing else.
+    """
     out = subprocess.run(
         [shutil.which("ffprobe") or "ffprobe", "-v", "error",
          "-select_streams", "v:0", "-show_entries", "stream=width,height",
          "-of", "csv=p=0:s=x", str(path)],
-        capture_output=True, text=True, timeout=60).stdout.strip()
-    w, _, h = out.partition("x")
-    return int(w), int(h)
+        capture_output=True, text=True, timeout=60).stdout
+    nums = re.findall(r"\d+", (out or "").splitlines()[0] if out.strip() else "")
+    if len(nums) < 2:
+        raise ValueError(f"could not read dimensions from ffprobe output: {out!r:.80}")
+    return int(nums[0]), int(nums[1])
+
+
+def display_dims(path: Path) -> tuple[int, int]:
+    """Dimensions the FILTER CHAIN sees, i.e. after ffmpeg auto-rotates.
+
+    The trap, and it has bitten this codebase before: ffprobe's stream=width,height
+    reports the STORED frame. An iPhone portrait clip is stored 3840x2160 with
+    rotation=-90 and ffmpeg auto-rotates it to 2160x3840 before any filter runs.
+    Computing a crop against the stored dims produces a box that is the right size
+    for the wrong orientation — it lands somewhere else entirely, or silently
+    clamps to the edge.
+
+    Finished clips have the rotation already baked in and report 0, so this is
+    safe to call on either a source recording or a rendered clip.
+    """
+    w, h = probe(path)
+    out = subprocess.run(
+        [shutil.which("ffprobe") or "ffprobe", "-v", "error",
+         "-select_streams", "v:0", "-show_entries",
+         "stream_side_data=rotation:stream_tags=rotate",
+         "-of", "default=nw=1:nk=1", str(path)],
+        capture_output=True, text=True, timeout=60).stdout
+    nums = re.findall(r"-?\d+", out or "")
+    rot = abs(int(nums[0])) % 180 if nums else 0
+    return (h, w) if rot == 90 else (w, h)
 
 
 def plan(src_w: int, src_h: int, aspect: str = "4:5", zoom: float = 1.0,

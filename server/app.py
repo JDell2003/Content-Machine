@@ -503,6 +503,50 @@ async def swipe_queue(limit: int = 40):
     return {"deck": spread[:max(1, min(200, limit))], "total": len(spread)}
 
 
+# --------------------------------------------------------------- clip editor
+@app.get("/api/clips/{job_id}/{clip_id}/edit")
+async def clip_edit_get(job_id: str, clip_id: str):
+    """Everything the editor needs to open: cues, current spec, and the presets."""
+    from pipeline import captions as _cap, color as _c, audio_fx as _a, reframe as _rf  # noqa: PLC0415
+    job = jobs.load(job_id)
+    if not job:
+        raise HTTPException(404, "no such job")
+    clip = _find_clip(job, clip_id)
+    srt = Path(clip["path"]).with_suffix(".srt") if clip.get("path") else None
+    cap = _cap.load()
+    return {
+        "clip": {k: clip.get(k) for k in
+                 ("id", "hook", "caption", "hashtags", "duration_s", "start_s",
+                  "profile", "topic", "grade", "audio_fx", "edited")},
+        "cues": _cap.read_srt(srt) if srt else [],
+        "spec": clip.get("edit_spec") or {},
+        "defaults": {"size": cap["size_wide"], "margin": cap["margin_wide"],
+                     "color": cap["color"], "outline_color": cap["outline_color"],
+                     "outline": cap["outline"]},
+        "color_presets": {k: v["label"] for k, v in _c.PRESETS.items()},
+        "audio_presets": {k: v["label"] for k, v in _a.PRESETS.items()},
+        "aspects": [a for a in _rf.ASPECTS],
+    }
+
+
+@app.post("/api/clips/{job_id}/{clip_id}/edit")
+async def clip_edit_apply(job_id: str, clip_id: str, body: dict = Body(...)):
+    """Apply the whole edit spec in ONE render pass from the original source."""
+    from pipeline import edit as _e  # noqa: PLC0415
+    job = jobs.load(job_id)
+    if not job:
+        raise HTTPException(404, "no such job")
+    clip = _find_clip(job, clip_id)
+    if not clip.get("path"):
+        raise HTTPException(400, "clip was never rendered")
+    _e.apply(job, clip, body or {})
+    jobs.update(job_id, clips=job["clips"])
+    if clip.get("edit_error"):
+        raise HTTPException(500, clip["edit_error"])
+    return {"ok": True, "duration_s": clip.get("duration_s"),
+            "grade": clip.get("grade"), "audio_fx": clip.get("audio_fx")}
+
+
 # ------------------------------------------------------------ post registry
 @app.get("/api/posts")
 async def posts_list():

@@ -388,7 +388,7 @@ async function loadCues(id) {
       <input type="range" min="10" max="46" value="${CAPSET.size_wide}" style="width:100%"
              oninput="document.getElementById('sz-${id}').textContent=this.value" id="rsz-${id}"></label>
     <label class="muted" style="display:block">Height off the bottom
-      <input type="range" min="20" max="420" value="${CAPSET.margin_wide}" style="width:100%" id="rmg-${id}"></label>
+      <input type="range" min="10" max="180" value="${Math.min(CAPSET.margin_wide, 180)}" style="width:100%" id="rmg-${id}"></label>
     <div class="muted" style="margin:6px 0">size <b id="sz-${id}">${CAPSET.size_wide}</b>
       · re-burning takes about ${reburnEta(id)}s</div>
     <button class="ghost" id="cbtn-${id}" onclick="saveCues('${id}')">Save &amp; re-burn this clip</button>

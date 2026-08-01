@@ -11,7 +11,10 @@
 <!-- ------------------------------------------------------------- swipe deck -->
 <div id="pane-deck">
   <div class="card" style="padding:12px">
-    <div class="muted" id="deckcount">loading…</div>
+    <div class="row" style="align-items:center">
+      <div style="flex:1" class="muted" id="deckcount">loading…</div>
+      <button class="ghost" style="width:auto;padding:6px 14px" onclick="edToggle()">Edit</button>
+    </div>
   </div>
 
   <div id="stage" class="sw-stage">
@@ -21,6 +24,44 @@
         the calendar, or run another video.</p>
       <a class="btn" href="/status" style="display:flex;justify-content:center;text-decoration:none">Jobs →</a>
     </div>
+  </div>
+
+  <!-- ------------------------------------------------------------- editor -->
+  <div id="editor" class="ed" style="display:none">
+    <div class="ed-bar">
+      <button class="ed-icon" title="Play / pause" onclick="edPlay()">▶</button>
+      <span class="ed-time" id="ed-time">0:00 / 0:00</span>
+      <span style="flex:1"></span>
+      <button class="ed-icon" title="Cut from here" onclick="edSplit()">⑃</button>
+      <button class="ed-icon" title="Undo all edits" onclick="edReset()">↺</button>
+    </div>
+
+    <!-- Timeline: one video lane, one audio lane. Deliberately not ten tracks —
+         drag the ends to trim, tap ⑃ to start a cut, tap again to end it. -->
+    <div class="ed-tl" id="ed-tl">
+      <div class="ed-ruler" id="ed-ruler"></div>
+      <div class="ed-lane" id="ed-lane-v">
+        <div id="ed-cuts"></div>
+        <div class="ed-trim ed-trim-l" id="ed-tl-l"></div>
+        <div class="ed-trim ed-trim-r" id="ed-tl-r"></div>
+      </div>
+      <div class="ed-lane ed-lane-a"></div>
+      <div class="ed-head" id="ed-head"></div>
+    </div>
+
+    <div class="ed-tabs">
+      <button class="ed-tab on" data-t="captions" onclick="edTab('captions')">Captions</button>
+      <button class="ed-tab" data-t="audio" onclick="edTab('audio')">Audio</button>
+      <button class="ed-tab" data-t="color" onclick="edTab('color')">Colour</button>
+      <button class="ed-tab" data-t="aspect" onclick="edTab('aspect')">Ratio</button>
+    </div>
+    <div class="ed-panel" id="ed-panel"></div>
+
+    <div class="row" style="gap:8px;margin-top:10px">
+      <button class="ghost" onclick="edClose()">Close</button>
+      <button id="ed-apply" onclick="edApply()">Apply edits</button>
+    </div>
+    <div id="ed-status" class="muted" style="margin-top:6px"></div>
   </div>
 
   <div class="sw-actions">
@@ -86,6 +127,37 @@
   .sw-btn.ok{color:var(--ok);border-color:var(--ok)}
   .sw-btn.bad{color:var(--bad);border-color:var(--bad)}
   .sw-btn.mid{color:var(--muted);font-size:20px}
+  /* ---- editor, styled after the reference: dark chrome, lane strip, ruler ---- */
+  .ed{background:#14171d;border:1px solid var(--line);border-radius:14px;padding:10px;margin-top:10px}
+  .ed-bar{display:flex;align-items:center;gap:8px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  .ed-icon{width:auto;min-height:34px;padding:0 12px;background:var(--panel2);color:var(--ink);
+           border:1px solid var(--line);border-radius:8px;font-size:15px;flex:0 0 auto}
+  .ed-time{font-family:monospace;font-size:12px;color:var(--muted)}
+  .ed-tl{position:relative;margin:10px 0;user-select:none;touch-action:none}
+  .ed-ruler{position:relative;height:16px;border-bottom:1px solid var(--line);
+            font:10px/16px monospace;color:var(--muted)}
+  .ed-ruler span{position:absolute;transform:translateX(-50%);white-space:nowrap}
+  .ed-lane{position:relative;height:46px;margin-top:6px;border-radius:6px;
+           background:linear-gradient(180deg,#8c3b3b,#6f2f2f);overflow:hidden}
+  .ed-lane-a{height:26px;background:linear-gradient(180deg,#2f4e86,#24406f)}
+  .ed-trim{position:absolute;top:0;bottom:0;width:14px;background:var(--accent);
+           cursor:ew-resize;z-index:3;border-radius:4px}
+  .ed-trim-l{left:0} .ed-trim-r{right:0}
+  .ed-cut{position:absolute;top:0;bottom:0;background:rgba(0,0,0,.66);
+          border-left:2px solid var(--bad);border-right:2px solid var(--bad);z-index:2}
+  .ed-head{position:absolute;top:0;bottom:0;width:2px;background:#fff;z-index:4;pointer-events:none}
+  .ed-tabs{display:flex;gap:4px;margin-top:4px}
+  .ed-tab{flex:1;min-height:38px;background:var(--panel2);color:var(--muted);
+          border:1px solid var(--line);border-radius:8px;font-size:13px;font-weight:700}
+  .ed-tab.on{background:var(--accent);color:#20160a;border-color:var(--accent)}
+  .ed-panel{margin-top:10px;max-height:38vh;overflow:auto}
+  .ed-panel label{display:block;margin-top:8px;font-size:13px;color:var(--muted)}
+  .ed-panel input[type=range]{width:100%}
+  .ed-panel input[type=text]{width:100%;min-height:40px;font-size:14px;padding:0 10px;
+    background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:var(--ink)}
+  .ed-swatch{width:34px;height:34px;border-radius:8px;border:2px solid var(--line);
+             flex:0 0 auto;cursor:pointer}
+  .ed-swatch.on{border-color:var(--accent)}
   .cal-day{border-top:1px solid var(--line);padding:10px 0}
   .cal-slot{display:flex;gap:10px;align-items:baseline;padding:6px 0}
   .cal-time{font-family:monospace;color:var(--accent);min-width:52px}
@@ -135,6 +207,7 @@ function render() {
     </div>`;
   stage.appendChild(el);
   wireDrag(el);
+  if (ED) { edClose(); }
 }
 
 // Drag with pointer events so one code path covers finger and mouse.
@@ -232,6 +305,246 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "ArrowRight") decide("approved");
   if (e.key === "ArrowLeft") decide("rejected");
 });
+
+// ============================================================= clip editor
+// Every change collects into ONE spec and renders in ONE pass. Editing each
+// thing separately would cost an encode per tweak, which is a queue, not an
+// editor.
+let ED = null;      // {job_id, clip_id, dur, spec, cues, presets…}
+let EDCUT = null;   // in-progress cut start, in seconds
+
+const fmt = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
+const edVid = () => document.querySelector(".sw-card video");
+
+async function edOpen() {
+  const c = cur();
+  if (!c) return;
+  const r = await fetch(`/api/clips/${c.job_id}/${encodeURIComponent(c.id)}/edit`);
+  if (r.status === 401) { location.href = "/login"; return; }
+  if (!r.ok) { alert("Could not open the editor for this clip."); return; }
+  const d = await r.json();
+  ED = { job_id: c.job_id, clip_id: c.id, dur: +d.clip.duration_s || 1, ...d };
+  ED.spec = JSON.parse(JSON.stringify(d.spec || {}));
+  ED.spec.trim = ED.spec.trim || [0, ED.dur];
+  ED.spec.cuts = ED.spec.cuts || [];
+  ED.spec.captions = ED.spec.captions || { ...d.defaults };
+  ED.spec.audio = ED.spec.audio || { preset: "office", intensity: 1, volume_db: 0 };
+  ED.spec.color = ED.spec.color || { preset: "office", intensity: 1 };
+  ED.spec.aspect = ED.spec.aspect || { ratio: "original", pan: 0.5, zoom: 1 };
+  document.getElementById("editor").style.display = "";
+  edWireTimeline(); edPaintTimeline(); edTab("captions"); edTick();
+}
+
+function edToggle() {
+  if (ED) { edClose(); } else { edOpen(); }
+}
+
+function edClose() { ED = null; document.getElementById("editor").style.display = "none"; }
+
+function edPaintTimeline() {
+  if (!ED) return;
+  const pct = (t) => (t / ED.dur) * 100;
+  const step = ED.dur > 120 ? 30 : ED.dur > 60 ? 15 : 10;
+  let marks = "";
+  for (let t = 0; t <= ED.dur; t += step) marks += `<span style="left:${pct(t)}%">${fmt(t)}</span>`;
+  document.getElementById("ed-ruler").innerHTML = marks;
+  document.getElementById("ed-tl-l").style.left = pct(ED.spec.trim[0]) + "%";
+  document.getElementById("ed-tl-r").style.right = (100 - pct(ED.spec.trim[1])) + "%";
+  document.getElementById("ed-cuts").innerHTML = ED.spec.cuts.map((c, i) =>
+    `<div class="ed-cut" style="left:${pct(c[0])}%;width:${pct(c[1] - c[0])}%"
+       title="tap to remove this cut" onclick="edUncut(${i})"></div>`).join("");
+}
+
+function edTick() {
+  const v = edVid();
+  if (v && ED) {
+    document.getElementById("ed-head").style.left = (v.currentTime / ED.dur) * 100 + "%";
+    document.getElementById("ed-time").textContent =
+      `${fmt(v.currentTime)} / ${fmt(ED.dur)}` + (EDCUT !== null ? "  · cutting…" : "");
+  }
+  if (ED) requestAnimationFrame(edTick);
+}
+
+function edPlay() { const v = edVid(); if (v) { v.paused ? v.play() : v.pause(); } }
+
+// Two taps: first sets the cut start, second closes it. Simpler than dragging a
+// region on a phone, and it reads back the same way.
+function edSplit() {
+  const v = edVid(); if (!v || !ED) return;
+  if (EDCUT === null) { EDCUT = v.currentTime; return; }
+  const a = Math.min(EDCUT, v.currentTime), b = Math.max(EDCUT, v.currentTime);
+  EDCUT = null;
+  if (b - a < 0.15) return;
+  ED.spec.cuts.push([+a.toFixed(2), +b.toFixed(2)]);
+  ED.spec.cuts.sort((x, y) => x[0] - y[0]);
+  edPaintTimeline();
+}
+function edUncut(i) { ED.spec.cuts.splice(i, 1); edPaintTimeline(); }
+function edReset() {
+  if (!ED) return;
+  ED.spec.trim = [0, ED.dur]; ED.spec.cuts = []; EDCUT = null;
+  edPaintTimeline();
+}
+
+// Scrub + trim handles, pointer events so finger and mouse share one path.
+function edWireTimeline() {
+  const tl = document.getElementById("ed-tl");
+  if (!tl || tl.dataset.wired) return;
+  tl.dataset.wired = "1";
+  let mode = null;
+  const at = (e) => {
+    const r = tl.getBoundingClientRect();
+    return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * (ED ? ED.dur : 1);
+  };
+  tl.addEventListener("pointerdown", (e) => {
+    if (!ED) return;
+    mode = e.target.id === "ed-tl-l" ? "l" : e.target.id === "ed-tl-r" ? "r" : "scrub";
+    tl.setPointerCapture(e.pointerId);
+    edMove(mode, at(e));
+  });
+  tl.addEventListener("pointermove", (e) => { if (mode && ED) edMove(mode, at(e)); });
+  tl.addEventListener("pointerup", () => { mode = null; });
+  tl.addEventListener("pointercancel", () => { mode = null; });
+}
+function edMove(mode, t) {
+  const v = edVid();
+  if (mode === "l") ED.spec.trim[0] = Math.min(t, ED.spec.trim[1] - 0.3);
+  else if (mode === "r") ED.spec.trim[1] = Math.max(t, ED.spec.trim[0] + 0.3);
+  else if (v) v.currentTime = t;
+  edPaintTimeline();
+}
+
+function edTab(which) {
+  if (!ED) return;
+  document.querySelectorAll(".ed-tab").forEach(b => b.classList.toggle("on", b.dataset.t === which));
+  const P = document.getElementById("ed-panel");
+  const sp = ED.spec;
+  if (which === "captions") {
+    const cap = sp.captions;
+    P.innerHTML = `
+      <label>Size <b>${cap.size}</b>
+        <input type="range" min="10" max="46" value="${cap.size}"
+          oninput="ED.spec.captions.size=+this.value;edTab('captions')"></label>
+      <label>Height off the bottom <b>${cap.margin}</b>
+        <input type="range" min="10" max="180" value="${Math.min(cap.margin, 180)}"
+          oninput="ED.spec.captions.margin=+this.value;edTab('captions')"></label>
+      <label>Outline <b>${cap.outline}</b>
+        <input type="range" min="0" max="10" value="${cap.outline}"
+          oninput="ED.spec.captions.outline=+this.value;edTab('captions')"></label>
+      <label>Text colour</label>
+      <div class="row" style="gap:6px;flex-wrap:wrap">${
+        ["#FFFFFF", "#F5A524", "#3FB950", "#F85149", "#00E5FF", "#FFD479"].map(h =>
+        `<div class="ed-swatch ${cap.color === h ? "on" : ""}" style="background:${h}"
+           onclick="ED.spec.captions.color='${h}';edTab('captions')"></div>`).join("")}</div>
+      <label style="margin-top:12px">Wording — empty a line to drop that caption</label>
+      <div>${(ED.cues || []).map((q, i) => `
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:5px">
+          <span class="muted" style="font-size:11px;min-width:46px">${q.start.slice(3, 8)}</span>
+          <input type="text" value="${esc(q.text)}" oninput="ED.cues[${i}].text=this.value">
+        </div>`).join("")}</div>`;
+  } else if (which === "audio") {
+    const a = sp.audio;
+    P.innerHTML = `
+      <label>Voice preset</label>
+      <select style="width:100%" onchange="ED.spec.audio.preset=this.value">
+        ${Object.entries(ED.audio_presets).map(([k, l]) =>
+          `<option value="${k}"${k === a.preset ? " selected" : ""}>${esc(l)}</option>`).join("")}
+      </select>
+      <label>Strength <b>${Math.round(a.intensity * 100)}%</b>
+        <input type="range" min="0" max="150" value="${Math.round(a.intensity * 100)}"
+          oninput="ED.spec.audio.intensity=+this.value/100;edTab('audio')"></label>
+      <label>Volume <b>${a.volume_db > 0 ? "+" : ""}${a.volume_db} dB</b>
+        <input type="range" min="-12" max="12" step="1" value="${a.volume_db}"
+          oninput="ED.spec.audio.volume_db=+this.value;edTab('audio')"></label>
+      <button class="ghost" style="margin-top:10px" onclick="edHear()">Hear 12s</button>
+      <div id="ed-aprev" style="margin-top:8px"></div>
+      <div class="muted" style="margin-top:8px;font-size:12px">Metallic or warbly? That's the
+        noise remover working too hard — turn Strength <b>down</b>. "Level only" disables it.</div>`;
+  } else if (which === "color") {
+    const c = sp.color;
+    P.innerHTML = `
+      <label>Grade</label>
+      <select style="width:100%" onchange="ED.spec.color.preset=this.value;edPreview()">
+        ${Object.entries(ED.color_presets).map(([k, l]) =>
+          `<option value="${k}"${k === c.preset ? " selected" : ""}>${esc(l)}</option>`).join("")}
+      </select>
+      <label>Strength <b>${Math.round(c.intensity * 100)}%</b>
+        <input type="range" min="0" max="150" value="${Math.round(c.intensity * 100)}"
+          oninput="ED.spec.color.intensity=+this.value/100;edTab('color');edPreview()"></label>
+      <img id="ed-prev" style="width:100%;border-radius:10px;background:#000;margin-top:8px">
+      <div class="muted" style="font-size:12px">Preview is from the raw recording, so you're
+        seeing this grade on its own — not stacked on the one already applied.</div>`;
+    edPreview();
+  } else {
+    const a = sp.aspect;
+    P.innerHTML = `
+      <label>Aspect ratio</label>
+      <div class="row" style="gap:5px;flex-wrap:wrap">${ED.aspects.map(r =>
+        `<button class="${r === a.ratio ? "" : "ghost"}" style="flex:1;min-width:62px;padding:9px 0;font-size:13px"
+           onclick="edSetRatio('${r}')">${r}</button>`).join("")}</div>
+      ${a.ratio === "original" ? `<div class="muted" style="margin-top:10px">Frame left as shot.</div>` : `
+        <label style="margin-top:10px">Move up / down <b>${Math.round(a.pan * 100)}%</b>
+          <input type="range" min="0" max="100" value="${Math.round(a.pan * 100)}"
+            oninput="ED.spec.aspect.pan=+this.value/100;edTab('aspect')"></label>
+        <label>Zoom <b>${a.zoom.toFixed(2)}×</b>
+          <input type="range" min="100" max="220" value="${Math.round(a.zoom * 100)}"
+            oninput="ED.spec.aspect.zoom=+this.value/100;edTab('aspect')"></label>
+        ${a.ratio !== "9:16" && a.pan < 0.55
+          ? `<div class="muted" style="color:var(--warn);margin-top:6px">Captions may get cut — drag down a little.</div>` : ""}`}`;
+  }
+}
+
+function edSetRatio(r) {
+  ED.spec.aspect.ratio = r;
+  // Centred crops slice the burned-in captions; 0.62 keeps them in frame.
+  if (r !== "original" && ED.spec.aspect.pan === 0.5) ED.spec.aspect.pan = 0.62;
+  edTab("aspect");
+}
+
+let EDPT = null;
+function edPreview() {
+  clearTimeout(EDPT);
+  EDPT = setTimeout(() => {
+    const img = document.getElementById("ed-prev");
+    if (!img || !ED) return;
+    img.src = `/api/preview/frame?job_id=${ED.job_id}&clip_id=${encodeURIComponent(ED.clip_id)}`
+            + `&preset=${ED.spec.color.preset}&intensity=${ED.spec.color.intensity}&width=640&_=${Date.now()}`;
+  }, 250);
+}
+
+function edHear() {
+  const a = ED.spec.audio;
+  document.getElementById("ed-aprev").innerHTML =
+    `<audio controls autoplay style="width:100%" src="/api/preview/audio?job_id=${ED.job_id}`
+    + `&clip_id=${encodeURIComponent(ED.clip_id)}&preset=${a.preset}&intensity=${a.intensity}&_=${Date.now()}"></audio>`;
+}
+
+async function edApply() {
+  const btn = document.getElementById("ed-apply");
+  const st = document.getElementById("ed-status");
+  const kept = (ED.spec.trim[1] - ED.spec.trim[0]) -
+               ED.spec.cuts.reduce((s, c) => s + (c[1] - c[0]), 0);
+  btn.disabled = true;
+  btn.textContent = "Rendering…";
+  st.textContent = `one pass, about ${Math.max(20, Math.round(kept * 1.9))}s`;
+  try {
+    const body = { ...ED.spec, captions: { ...ED.spec.captions, cues: ED.cues } };
+    const r = await fetch(`/api/clips/${ED.job_id}/${encodeURIComponent(ED.clip_id)}/edit`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body) });
+    if (r.status === 401) { location.href = "/login"; return; }
+    if (!r.ok) {
+      st.innerHTML = `<span style="color:var(--bad)">${esc((await r.text()).slice(0, 200))}</span>`;
+      return;
+    }
+    const out = await r.json();
+    st.innerHTML = `<span style="color:var(--ok)">Done — now ${Math.round(out.duration_s)}s.</span>`;
+    const v = edVid();
+    if (v) { v.src = v.src.split("&_=")[0] + "&_=" + Date.now(); }  // bust the cache
+    ED.dur = out.duration_s; ED.spec.trim = [0, ED.dur]; ED.spec.cuts = [];
+    edPaintTimeline();
+  } finally { btn.disabled = false; btn.textContent = "Apply edits"; }
+}
 
 // ------------------------------------------------------------------ calendar
 function showTab(which) {
