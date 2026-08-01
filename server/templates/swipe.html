@@ -69,6 +69,12 @@
     <button class="sw-btn mid" onclick="skip()" title="Skip for now">↷</button>
     <button class="sw-btn ok" onclick="decide('approved')" title="Approve">✓</button>
   </div>
+  <label id="schedwrap" style="display:none;align-items:center;gap:10px;justify-content:center;
+         margin-top:12px;min-height:40px">
+    <input type="checkbox" id="schedtoggle" style="width:22px;height:22px">
+    <span class="muted" style="font-size:13px">Approve <b>&amp; schedule</b> to Instagram</span>
+  </label>
+  <div id="schedwhy" class="muted" style="text-align:center;margin-top:6px;font-size:12px"></div>
   <div class="muted" style="text-align:center;margin-top:8px;font-size:13px">
     Drag the card, or use ← / → . Rejecting asks why — that's what teaches the ranker.
   </div>
@@ -264,7 +270,22 @@ async function decide(verdict, alreadyFlew) {
     await send(c, { verdict, reason: pick.reason, note: pick.note });
   } else {
     if (!alreadyFlew) { const el = document.querySelector(".sw-card"); if (el) fly(el, true); }
-    await send(c, { verdict });
+    const tg = document.getElementById("schedtoggle");
+    if (tg && tg.checked && SCHEDOK) {
+      // One call approves AND queues it. The approval commits first server-side,
+      // so a Postiz failure still leaves you an approved, downloadable clip.
+      const r = await fetch(`/api/clips/${c.job_id}/${encodeURIComponent(c.id)}/approve-schedule`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ schedule: true }) });
+      if (r.ok) {
+        const o = await r.json();
+        document.getElementById("schedwhy").innerHTML = o.scheduled
+          ? `<span style="color:var(--ok)">queued for ${esc((o.slot || "").replace("T", " "))}</span>`
+          : `<span style="color:var(--warn)">approved, not queued — ${esc(o.reason || "Postiz refused")}</span>`;
+      }
+    } else {
+      await send(c, { verdict });
+    }
   }
   DECK.splice(IDX, 1);
   if (IDX >= DECK.length) IDX = Math.max(0, DECK.length - 1);
@@ -636,7 +657,26 @@ async function unschedule(job_id, clip_id) {
   await fetch("/api/schedule/unschedule", { method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ job_id, clip_id }) });
-  loadCal(); loadDeck();
+  loadCal(); let SCHEDOK = false;
+async function schedStatus() {
+  try {
+    const r = await fetch("/api/schedule/status");
+    if (!r.ok) return;
+    const st = await r.json();
+    SCHEDOK = st.configured;
+    document.getElementById("schedwrap").style.display = "flex";
+    const tg = document.getElementById("schedtoggle");
+    tg.checked = st.configured && st.default_on;
+    tg.disabled = !st.configured;
+    // Never let the toggle imply a capability that isn't wired up.
+    document.getElementById("schedwhy").innerHTML = st.configured ? ""
+      : `<span style="color:var(--warn)">Instagram not connected yet — approving still
+         works and clips stay downloadable.${st.has_key ? "" : " Missing Postiz API key."}
+         ${st.has_integration ? "" : " Missing integration id."}</span>`;
+  } catch (e) {}
+}
+schedStatus();
+loadDeck();
 }
 
 async function saveSched(patch) {
@@ -661,6 +701,25 @@ async function markPosted(job_id, clip_id) {
   loadCal();
 }
 
+let SCHEDOK = false;
+async function schedStatus() {
+  try {
+    const r = await fetch("/api/schedule/status");
+    if (!r.ok) return;
+    const st = await r.json();
+    SCHEDOK = st.configured;
+    document.getElementById("schedwrap").style.display = "flex";
+    const tg = document.getElementById("schedtoggle");
+    tg.checked = st.configured && st.default_on;
+    tg.disabled = !st.configured;
+    // Never let the toggle imply a capability that isn't wired up.
+    document.getElementById("schedwhy").innerHTML = st.configured ? ""
+      : `<span style="color:var(--warn)">Instagram not connected yet — approving still
+         works and clips stay downloadable.${st.has_key ? "" : " Missing Postiz API key."}
+         ${st.has_integration ? "" : " Missing integration id."}</span>`;
+  } catch (e) {}
+}
+schedStatus();
 loadDeck();
 </script>
 {% endblock %}

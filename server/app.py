@@ -547,6 +547,74 @@ async def clip_edit_apply(job_id: str, clip_id: str, body: dict = Body(...)):
             "grade": clip.get("grade"), "audio_fx": clip.get("audio_fx")}
 
 
+# ------------------------------------------------------- approve & schedule
+@app.get("/api/schedule/status")
+async def schedule_status():
+    """Is the publish path actually usable? The UI needs to know the difference
+    between 'ready' and 'will silently just approve'."""
+    from pipeline import postiz_client as _p  # noqa: PLC0415
+    import os  # noqa: PLC0415
+    return {
+        "postiz_url": os.environ.get("CM_POSTIZ_URL") or "",
+        "has_key": bool(os.environ.get("CM_POSTIZ_API_KEY")),
+        "has_integration": bool(os.environ.get("CM_POSTIZ_INTEGRATION_ID")),
+        "configured": _p.configured() and bool(os.environ.get("CM_POSTIZ_INTEGRATION_ID")),
+        "default_on": str(os.environ.get("CM_SCHEDULE_DEFAULT") or "0").lower()
+                      in {"1", "true", "yes", "on"},
+    }
+
+
+@app.post("/api/clips/{job_id}/{clip_id}/approve-schedule")
+async def approve_and_schedule(job_id: str, clip_id: str, body: dict = Body(default={})):
+    """Approve the clip AND push it to Postiz for its next open calendar slot.
+
+    Deliberate ordering: the approval is committed FIRST and separately. If the
+    Postiz push then fails, you still have an approved clip you can download and
+    post by hand — the download path stays the permanent fallback, never a
+    casualty of a scheduling error.
+    """
+    import os  # noqa: PLC0415
+    from pipeline import postiz_client as _p, registry as _r, schedule as _s  # noqa: PLC0415
+
+    job = jobs.load(job_id)
+    if not job:
+        raise HTTPException(404, "no such job")
+    clip = _find_clip(job, clip_id)
+
+    # 1. approve (same bookkeeping the plain approve does)
+    clip["decision"] = "approved"
+    clip["decided_at"] = time.time()
+    clip.setdefault("approved_at", clip["decided_at"])
+    jobs.update(job_id, clips=job["clips"])
+
+    if not body.get("schedule", True):
+        return {"ok": True, "approved": True, "scheduled": False, "reason": "toggle off"}
+
+    # 2. which slot? the governor decides — never "now", never same-hour
+    plan = _s.build(jobs.all_jobs())
+    slot = next((c.get("scheduled_at") for c in plan["clips"]
+                 if c.get("clip_id") == clip_id), None)
+
+    integration = os.environ.get("CM_POSTIZ_INTEGRATION_ID") or ""
+    if integration:
+        clip["postiz_integration_id"] = integration
+    res = _p.schedule_clip(clip, variant=str(body.get("variant") or "wide"),
+                           when_iso=slot)
+
+    if res.get("ok"):
+        _r.record_published(
+            job_id=job_id, clip_id=clip_id, platform="instagram",
+            media_id=str(res.get("media_id") or ""), slot_at=slot or "",
+            hook=clip.get("hook") or "", source_name=job.get("original_name") or "",
+            topic=clip.get("topic") or "", profile=clip.get("profile") or "")
+        clip["scheduled_at"] = slot
+        clip["media_id"] = res.get("media_id")
+        jobs.update(job_id, clips=job["clips"])
+
+    return {"ok": True, "approved": True, "scheduled": bool(res.get("ok")),
+            "slot": slot, "reason": res.get("reason"), "media_id": res.get("media_id")}
+
+
 # ------------------------------------------------------------ post registry
 @app.get("/api/posts")
 async def posts_list():
