@@ -503,6 +503,62 @@ async def swipe_queue(limit: int = 40):
     return {"deck": spread[:max(1, min(200, limit))], "total": len(spread)}
 
 
+# ------------------------------------------------------------ post registry
+@app.get("/api/posts")
+async def posts_list():
+    from pipeline import registry as _r  # noqa: PLC0415
+    return {"posts": _r.posts()}
+
+
+@app.get("/api/patterns")
+async def posts_patterns(metric: str = "views"):
+    from pipeline import registry as _r  # noqa: PLC0415
+    return _r.patterns(metric if metric in _r.METRIC_KEYS else "views")
+
+
+@app.post("/api/posts/published")
+async def posts_published(body: dict = Body(...)):
+    """Record that a clip went out. Called by the publish path when Postiz is
+    wired; usable by hand until then so the registry starts filling now."""
+    from pipeline import registry as _r  # noqa: PLC0415
+    job = jobs.load(str(body.get("job_id") or ""))
+    if not job:
+        raise HTTPException(404, "no such job")
+    clip = _find_clip(job, str(body.get("clip_id") or ""))
+    row = _r.record_published(
+        job_id=job["id"], clip_id=clip["id"],
+        platform=str(body.get("platform") or "instagram"),
+        media_id=str(body.get("media_id") or ""),
+        permalink=str(body.get("permalink") or ""),
+        slot_at=str(body.get("slot_at") or clip.get("scheduled_at") or ""),
+        hook=clip.get("hook") or "", source_name=job.get("original_name") or "",
+        topic=clip.get("topic") or "", profile=clip.get("profile") or "")
+    clip["posted"] = True
+    clip["posted_at"] = time.time()
+    if row.get("media_id"):
+        clip["media_id"] = row["media_id"]      # the handle UP3 metrics pull needs
+    jobs.update(job["id"], clips=job["clips"])
+    return {"ok": True, "row": row}
+
+
+@app.post("/api/posts/metrics")
+async def posts_metrics(body: dict = Body(...)):
+    """Attach a metrics reading. Append-only: a later pull never overwrites an
+    earlier one, because hour-one and week-two numbers mean different things."""
+    from pipeline import registry as _r  # noqa: PLC0415
+    vals = {k: body[k] for k in _r.METRIC_KEYS if k in body}
+    if not vals:
+        raise HTTPException(400, f"send at least one of {list(_r.METRIC_KEYS)}")
+    return {"ok": True, "row": _r.record_metrics(
+        job_id=str(body.get("job_id") or ""), clip_id=str(body.get("clip_id") or ""),
+        **vals)}
+
+
+@app.get("/patterns", response_class=HTMLResponse)
+async def patterns_page(request: Request):
+    return TEMPLATES.TemplateResponse(request, "patterns.html", {})
+
+
 # ---------------------------------------------------------------------- tune
 @app.get("/api/tune")
 async def tune_signal():

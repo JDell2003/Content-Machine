@@ -294,7 +294,9 @@ async function loadCal() {
     const nice = new Date(day + "T00:00").toLocaleDateString(undefined,
       { weekday: "long", month: "short", day: "numeric" });
     return `<div class="card" style="padding:12px"><b>${nice}</b>
-      ${byDay[day].map(slot => slot.clip ? `<div class="cal-slot">
+      ${byDay[day].map(slot => slot.clip ? `<div class="cal-slot" draggable="true"
+            ondragstart="dragStart(event,'${slot.clip.job_id}','${slot.clip.clip_id}')"
+            ondragover="event.preventDefault()" ondrop="dropOn(event,'${slot.at}')">
           <span class="cal-time">${slot.time}</span>
           <span style="flex:1">${esc((slot.clip.hook || "").slice(0, 66))}
             <div class="muted" style="font-size:12px">${esc(slot.clip.source_name || "")}</div></span>
@@ -302,10 +304,30 @@ async function loadCal() {
             onclick="unschedule('${slot.clip.job_id}','${slot.clip.clip_id}')">remove</button>
           <button class="ghost" style="width:auto;padding:4px 9px;font-size:12px"
             onclick="markPosted('${slot.clip.job_id}','${slot.clip.clip_id}')">posted</button>
-        </div>` : `<div class="cal-slot"><span class="cal-time">${slot.time}</span>
+        </div>` : `<div class="cal-slot" ondragover="event.preventDefault()"
+            ondrop="dropOn(event,'${slot.at}')">
+          <span class="cal-time">${slot.time}</span>
           <span class="muted" style="flex:1">open</span></div>`).join("")}
     </div>`;
   }).join("");
+}
+
+// Drag a clip onto any slot to pin it there. A pinned clip keeps its slot while
+// the rest of the queue flows around it — dropping onto its own slot un-pins it.
+let DRAG = null;
+function dragStart(e, job_id, clip_id) {
+  DRAG = { job_id, clip_id };
+  e.dataTransfer.effectAllowed = "move";
+}
+async function dropOn(e, at) {
+  e.preventDefault();
+  if (!DRAG) return;
+  const body = { ...DRAG, at };
+  DRAG = null;
+  const r = await fetch("/api/schedule/pin", { method: "POST",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!r.ok) { alert((await r.text()).slice(0, 200)); return; }
+  loadCal();
 }
 
 async function unschedule(job_id, clip_id) {

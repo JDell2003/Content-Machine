@@ -56,7 +56,11 @@ def _read_jsonl(path: Path, limit: int = 400) -> list[dict]:
 def signal() -> dict:
     """What we know right now, with no brain call. Drives the UI readout."""
     rej = _read_jsonl(FEEDBACK)
-    perf = _read_jsonl(PERFORMANCE)
+    # Weighted tune (UP3): winners and losers by real numbers, not just taste.
+    from . import registry as _reg  # noqa: PLC0415
+    scored = [p for p in _reg.posts() if p.get("has_metrics")]
+    scored.sort(key=lambda p: -(p.get("views") or 0))
+    perf = scored
     by = lambda key: Counter(str(r.get(key) or "?") for r in rej).most_common(8)  # noqa: E731
     return {
         "rejections": len(rej),
@@ -103,9 +107,19 @@ def _prompt(sig: dict, rej: list[dict], perf: list[dict], exemplars: str) -> str
         lines += ["", "== WHAT THEY LOVE (EXEMPLARS.md) ==", exemplars[:2500]]
     if perf:
         lines += ["", "== POSTED PERFORMANCE =="]
-        for row in perf[-25:]:
+        top, bottom = perf[:8], perf[-8:] if len(perf) > 8 else []
+        lines.append("BEST performing:")
+        for row in top:
             lines.append(f"  - {str(row.get('hook') or '')[:90]} :: "
-                         f"views={row.get('views','?')} saves={row.get('saves','?')}")
+                         f"views={row.get('views','?')} saves={row.get('saves','?')} "
+                         f"slot={str(row.get('slot_at') or '')[11:16]}")
+        if bottom:
+            lines.append("WORST performing:")
+            for row in bottom:
+                lines.append(f"  - {str(row.get('hook') or '')[:90]} :: "
+                             f"views={row.get('views','?')} slot={str(row.get('slot_at') or '')[11:16]}")
+        lines.append("Only draw a conclusion from these if the gap is large AND "
+                     "there are enough posts; a winner across 4 posts is noise.")
 
     lines += [
         "",
@@ -140,7 +154,11 @@ def run(force: bool = False, ask=None) -> dict:
                 "signal": sig}
 
     rej = _read_jsonl(FEEDBACK)
-    perf = _read_jsonl(PERFORMANCE)
+    # Weighted tune (UP3): winners and losers by real numbers, not just taste.
+    from . import registry as _reg  # noqa: PLC0415
+    scored = [p for p in _reg.posts() if p.get("has_metrics")]
+    scored.sort(key=lambda p: -(p.get("views") or 0))
+    perf = scored
     exemplars = (EXEMPLARS.read_text(encoding="utf-8", errors="replace")
                  if EXEMPLARS.exists() else "")
 

@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}Patterns — Content Machine{% endblock %}
+{% block n6 %}on{% endblock %}
+{% block body %}
+
+<div class="card">
+  <h1>Patterns</h1>
+  <p class="muted">What actually performed, cut the three ways that change a
+    decision: which <b>time slot</b>, which <b>source video</b>, which <b>topic</b>.
+    This is the page week three's call reads — contract onto winners, or push the
+    cadence up.</p>
+  <div id="gate" class="muted"></div>
+</div>
+
+<div class="card">
+  <div class="muted" style="font-weight:700;margin-bottom:6px">Measure by</div>
+  <div id="metrics" class="row" style="gap:4px;flex-wrap:wrap"></div>
+</div>
+
+<div id="panels"></div>
+
+<div class="card">
+  <h2>Log a post's numbers</h2>
+  <p class="muted">Until Instagram is wired, type them in. Readings are append-only —
+    logging again later adds a reading, it doesn't overwrite the first one, because
+    hour-one and week-two numbers mean different things.</p>
+  <div id="pending" class="muted">loading…</div>
+</div>
+
+<script>
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const KEYS = ["views","likes","saves","comments","shares","reach"];
+let METRIC = "views";
+
+async function load() {
+  const [pr, po] = await Promise.all([
+    fetch(`/api/patterns?metric=${METRIC}`), fetch("/api/posts")]);
+  if (pr.status === 401) { location.href = "/login"; return; }
+  const p = await pr.json();
+  const { posts } = await po.json();
+
+  document.getElementById("metrics").innerHTML = KEYS.map(k =>
+    `<button class="${k === METRIC ? "" : "ghost"}" style="flex:1;min-width:82px;padding:8px 0;font-size:13px"
+       onclick="METRIC='${k}';load()">${k}</button>`).join("");
+
+  // The honest gate. Four posts cannot tell you which slot wins.
+  document.getElementById("gate").innerHTML = p.enough_data
+    ? `<b>${p.posts_with_metrics}</b> posts with numbers · ${p.total_published} published`
+    : `<span style="color:var(--warn)">${p.posts_with_metrics} posts with numbers.
+       Differences below are <b>noise</b> until about ${p.needed} more — a slot that
+       "wins" on four posts is randomness, and optimising against it is worse than
+       not looking.</span>`;
+
+  const panel = (title, rows, note) => !rows.length ? "" : `
+    <div class="card"><h2>${title}</h2>
+      ${note ? `<p class="muted">${note}</p>` : ""}
+      ${rows.map(r => `<div class="kv">
+        <span>${esc(r.key)}</span>
+        <span style="text-align:right">${r.avg.toLocaleString()}
+          <span class="muted">avg · n=${r.n}${r.n < 3 ? " ⚠" : ""}</span></span>
+      </div>`).join("")}</div>`;
+
+  document.getElementById("panels").innerHTML =
+    panel("By time slot", p.by_slot, "Which posting time earns the most " + METRIC + ".") +
+    panel("By weekday", p.by_weekday) +
+    panel("By source video", p.by_source, "Which recordings are worth doing more of.") +
+    panel("By topic", p.by_topic) ||
+    `<div class="card"><p class="muted">Nothing logged yet. Publish a clip, then add
+      its numbers below and this fills in.</p></div>`;
+
+  const need = posts.filter(x => !x.has_metrics);
+  document.getElementById("pending").innerHTML = posts.length
+    ? (need.length ? need : posts).slice(0, 25).map(x => `
+       <div style="border-top:1px solid var(--line);padding:10px 0">
+         <b>${esc((x.hook || x.clip_id || "").slice(0, 62))}</b>
+         <div class="muted" style="font-size:12px">${esc(x.slot_at || "")}
+           ${x.media_id ? " · media " + esc(x.media_id) : ""}
+           ${x.has_metrics ? " · has numbers" : ""}</div>
+         <div class="row" style="gap:6px;margin-top:6px">
+           ${KEYS.slice(0, 4).map(k => `<input id="m-${esc(x.clip_id)}-${k}" placeholder="${k}"
+              inputmode="numeric" style="flex:1;min-width:0;font-size:14px">`).join("")}
+         </div>
+         <button class="ghost" style="margin-top:6px"
+           onclick="saveMetrics('${esc(x.job_id)}','${esc(x.clip_id)}')">Save numbers</button>
+       </div>`).join("")
+    : `<div class="muted">No posts recorded yet.</div>`;
+}
+
+async function saveMetrics(job_id, clip_id) {
+  const body = { job_id, clip_id };
+  for (const k of KEYS.slice(0, 4)) {
+    const el = document.getElementById(`m-${clip_id}-${k}`);
+    if (el && el.value.trim() !== "") body[k] = Number(el.value);
+  }
+  if (Object.keys(body).length === 2) return alert("Type at least one number.");
+  const r = await fetch("/api/posts/metrics", { method: "POST",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!r.ok) return alert((await r.text()).slice(0, 200));
+  load();
+}
+load();
+</script>
+{% endblock %}
