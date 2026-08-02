@@ -50,6 +50,9 @@
       <button class="ed-tab" data-t="color" onclick="edTab('color')">Color</button>
       <button class="ed-tab" data-t="aspect" onclick="edTab('aspect')">Ratio</button>
     </div>
+    <div class="muted" style="font-size:12px;margin-top:6px">On the video: drag the
+      caption to move it, drag either orange edge to change how wide it wraps,
+      double-click it to retype the words.</div>
     <div class="ed-panel" id="ed-panel"></div>
 
     <div class="row" style="gap:8px;margin-top:10px">
@@ -95,7 +98,13 @@
   .sw-stage{position:relative;min-height:60vh}
   .sw-card{position:absolute;inset:0;background:var(--panel);border:1px solid var(--line);
            border-radius:16px;overflow:hidden;touch-action:pan-y;will-change:transform}
-  .sw-card video{border-radius:0;max-height:62vh;object-fit:contain;background:#000}
+  .sw-card video{border-radius:0;background:#000;display:block;width:100%;height:100%;
+                 object-fit:contain;max-height:62vh}
+  #frame-live{position:relative;overflow:hidden;background:#000;margin:0 auto;
+              max-width:100%}
+  /* With a ratio chosen the box drives the shape: fixed height, width derived
+     from the ratio, and the video switches to cover so the crop is real. */
+  #frame-live.ratio video{object-fit:cover;max-height:none}
   .sw-meta{padding:12px}
   .sw-stamp{position:absolute;top:18px;font-size:26px;font-weight:900;padding:6px 14px;
             border-radius:10px;border:4px solid;opacity:0;pointer-events:none;transform:rotate(-12deg)}
@@ -152,6 +161,16 @@
   .ed-swatch{width:34px;height:34px;border-radius:8px;border:2px solid var(--line);
              flex:0 0 auto;cursor:pointer}
   .ed-swatch.on{border-color:var(--accent)}
+  .cap-live{position:absolute;text-align:center;cursor:move;user-select:none;
+            font-family:'Arial Black',Arial,sans-serif;font-weight:900;line-height:1.15;
+            z-index:5;touch-action:none}
+  .cap-live .cap-text{display:inline-block;width:100%;outline:none;white-space:pre-wrap}
+  .cap-live .cap-text.editing{background:rgba(0,0,0,.55);outline:2px solid var(--accent);
+            cursor:text;border-radius:4px}
+  .cap-live .cap-h{position:absolute;top:0;bottom:0;width:14px;cursor:ew-resize;
+            background:rgba(245,165,36,.0)}
+  .cap-live:hover .cap-h{background:rgba(245,165,36,.55);border-radius:3px}
+  .cap-live .cap-hl{left:-14px} .cap-live .cap-hr{right:-14px}
   .cal-day{border-top:1px solid var(--line);padding:10px 0}
   /* ---- month calendar ---- */
   .cal-head{display:flex;align-items:center;gap:8px;margin-bottom:10px}
@@ -491,14 +510,23 @@ function edLive() {
   const box = document.getElementById("frame-live");
   if (box) {
     if (a.ratio && a.ratio !== "original") {
-      const [w, h] = a.ratio.split(":");
+      const [w, h] = a.ratio.split(":").map(Number);
+      box.classList.add("ratio");
+      // Fix the HEIGHT and derive width from the ratio. Setting aspect-ratio on
+      // a full-width box makes 9:16 taller than the screen; this way every ratio
+      // fits the same vertical space and only the width changes.
+      box.style.height = "62vh";
       box.style.aspectRatio = `${w} / ${h}`;
-      v.style.objectFit = "cover";
-      v.style.objectPosition = `50% ${Math.round((a.pan ?? 0.5) * 100)}%`;
+      box.style.width = "auto";
+      // pan moves the crop vertically on tall ratios, horizontally on wide ones
+      const p = Math.round((a.pan ?? 0.5) * 100);
+      const px = Math.round((a.panx ?? 0.5) * 100);
+      v.style.objectPosition = `${px}% ${p}%`;
       v.style.transform = `scale(${a.zoom || 1})`;
     } else {
-      box.style.aspectRatio = "";
-      v.style.objectFit = ""; v.style.objectPosition = ""; v.style.transform = "";
+      box.classList.remove("ratio");
+      box.style.height = ""; box.style.aspectRatio = ""; box.style.width = "";
+      v.style.objectPosition = ""; v.style.transform = "";
     }
   }
 
@@ -506,32 +534,123 @@ function edLive() {
 
 }
 
-// Caption overlay: an HTML approximation of the burn-in, so size/colour/height
-// are visible before spending a render on them.
+// ------------------------------------------- direct caption manipulation
+// Drag the caption to move it, drag either edge to set how wide the text box is
+// (which is what decides whether a line wraps), double-click to edit the words.
+//
+// All three map onto ASS style fields the renderer already understands:
+//   position  -> MarginV (up/down) and asymmetric MarginL/MarginR (left/right)
+//   width     -> MarginL + MarginR squeeze the box, forcing the wrap
+//   wording   -> the .srt cue itself
+// So what you drag is exactly what gets burned in, not an approximation.
+let CAPDRAG = null;
+
 function edCaptionLive() {
   const v = edVid(); if (!v || !ED) return;
+  const box = document.getElementById("frame-live") || v.parentElement;
   let ov = document.getElementById("cap-live");
   if (!ov) {
     ov = document.createElement("div");
     ov.id = "cap-live";
-    ov.style.cssText = "position:absolute;left:0;right:0;text-align:center;" +
-      "pointer-events:none;font-family:'Arial Black',Arial,sans-serif;" +
-      "font-weight:900;line-height:1.15;padding:0 6%;white-space:pre-wrap";
-    (document.getElementById("frame-live") || v.parentElement).appendChild(ov);
+    ov.className = "cap-live";
+    ov.innerHTML = `<span class="cap-h cap-hl"></span><span class="cap-text"></span>` +
+                   `<span class="cap-h cap-hr"></span>`;
+    box.appendChild(ov);
+    edCaptionWire(ov);
   }
   const cap = ED.spec.captions || {};
-  // ASS Fontsize is against a ~288-unit script height, and MarginV is measured
-  // from the bottom in those same units — mirror that so the preview lines up.
-  const H = v.clientHeight || 400;
+  const H = box.clientHeight || 400, W = box.clientWidth || 400;
+
+  // ASS sizes against a ~288-unit script height; mirror that so the preview and
+  // the burn agree.
   ov.style.fontSize = ((+cap.size || 20) / 288 * H) + "px";
   ov.style.bottom = ((+cap.margin || 70) / 288 * H) + "px";
-  ov.style.color = cap.color || "#FFFFFF";
+  const wf = Math.max(0.25, Math.min(1, +cap.width || 0.88));
+  ov.style.width = (wf * 100) + "%";
+  ov.style.left = (((+cap.x ?? 0.5) - wf / 2) * 100) + "%";
+  const t = ov.querySelector(".cap-text");
+  t.style.color = cap.color || "#FFFFFF";
   const o = Math.max(0, +cap.outline || 0) / 288 * H / 2;
-  ov.style.textShadow = o > 0
+  t.style.textShadow = o > 0
     ? [`${o}px ${o}px 0 #000`, `-${o}px ${o}px 0 #000`,
        `${o}px -${o}px 0 #000`, `-${o}px -${o}px 0 #000`].join(",")
     : "none";
-  ov.textContent = edCueAt(v.currentTime);
+  if (document.activeElement !== t) t.textContent = edCueAt(v.currentTime) || "";
+  ov.style.display = t.textContent ? "" : "none";
+}
+
+function edCaptionWire(ov) {
+  const box = () => document.getElementById("frame-live");
+  const text = ov.querySelector(".cap-text");
+
+  // double-click to edit the words in place, like a document
+  text.addEventListener("dblclick", () => {
+    const v = edVid(); if (v) v.pause();
+    text.contentEditable = "true";
+    text.classList.add("editing");
+    text.focus();
+    document.execCommand("selectAll", false, null);
+  });
+  text.addEventListener("blur", () => {
+    text.contentEditable = "false";
+    text.classList.remove("editing");
+    edCommitCue(text.textContent);
+  });
+  text.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); text.blur(); }
+    if (e.key === "Escape") { text.textContent = ""; text.blur(); }
+    e.stopPropagation();     // don't let arrows swipe the card away
+  });
+
+  ov.addEventListener("pointerdown", (e) => {
+    if (text.contentEditable === "true") return;
+    const b = box().getBoundingClientRect();
+    const edge = e.target.classList.contains("cap-hl") ? "l"
+               : e.target.classList.contains("cap-hr") ? "r" : "move";
+    CAPDRAG = { edge, b, x0: e.clientX, y0: e.clientY,
+                x: ED.spec.captions.x ?? 0.5,
+                w: ED.spec.captions.width ?? 0.88,
+                m: ED.spec.captions.margin ?? 70 };
+    ov.setPointerCapture(e.pointerId);
+    edSnap();
+    e.preventDefault(); e.stopPropagation();
+  });
+  ov.addEventListener("pointermove", (e) => {
+    if (!CAPDRAG || !ED) return;
+    const dx = (e.clientX - CAPDRAG.x0) / CAPDRAG.b.width;
+    const dy = (e.clientY - CAPDRAG.y0) / CAPDRAG.b.height;
+    const c = ED.spec.captions;
+    if (CAPDRAG.edge === "move") {
+      c.x = Math.max(0.1, Math.min(0.9, CAPDRAG.x + dx));
+      // margin is measured from the BOTTOM, so dragging down reduces it
+      c.margin = Math.max(5, Math.min(200, Math.round(CAPDRAG.m - dy * 288)));
+    } else {
+      // Dragging an edge changes the box width, which is what re-wraps the text.
+      const delta = CAPDRAG.edge === "l" ? -dx * 2 : dx * 2;
+      c.width = Math.max(0.25, Math.min(1, CAPDRAG.w + delta));
+    }
+    edCaptionLive();
+    e.preventDefault();
+  });
+  const stop = (e) => {
+    if (!CAPDRAG) return;
+    CAPDRAG = null;
+    edTab(document.querySelector(".ed-tab.on")?.dataset.t || "captions");
+  };
+  ov.addEventListener("pointerup", stop);
+  ov.addEventListener("pointercancel", stop);
+}
+
+// Write an inline edit back to the cue that is on screen right now.
+function edCommitCue(txt) {
+  const v = edVid(); if (!v || !ED) return;
+  const t = v.currentTime;
+  for (const q of (ED.cues || [])) {
+    if (t >= edSecs(q.start) && t <= edSecs(q.end)) {
+      if (q.text !== txt) { q.text = txt; edScript(); }
+      return;
+    }
+  }
 }
 
 function edSecs(stamp) {
@@ -581,10 +700,10 @@ async function edOpen() {
   ED.spec = JSON.parse(JSON.stringify(d.spec || {}));
   ED.spec.trim = ED.spec.trim || [0, ED.dur];
   ED.spec.cuts = ED.spec.cuts || [];
-  ED.spec.captions = ED.spec.captions || { ...d.defaults };
+  ED.spec.captions = { x: 0.5, width: 0.88, ...(d.defaults || {}), ...(ED.spec.captions || {}) };
   ED.spec.audio = ED.spec.audio || { preset: "office", intensity: 1, volume_db: 0 };
   ED.spec.color = ED.spec.color || { preset: "office", intensity: 1 };
-  ED.spec.aspect = ED.spec.aspect || { ratio: "original", pan: 0.5, zoom: 1 };
+  ED.spec.aspect = { ratio: "original", pan: 0.5, panx: 0.5, zoom: 1, ...(ED.spec.aspect || {}) };
   // Snapshot as opened. Approving only spends a render if something ACTUALLY
   // changed — otherwise a green swipe on an untouched clip would re-encode it
   // for nothing.
@@ -778,6 +897,9 @@ function edTab(which) {
         <label style="margin-top:10px">Move up / down <b id="lb-pan">${Math.round(a.pan * 100)}%</b>
           <input type="range" min="0" max="100" value="${Math.round(a.pan * 100)}"
             onpointerdown="edSnap()" oninput="ED.spec.aspect.pan=+this.value/100;lb('lb-pan',this.value+'%');edLive()"></label>
+        <label>Move left / right <b id="lb-panx">${Math.round((a.panx ?? 0.5) * 100)}%</b>
+          <input type="range" min="0" max="100" value="${Math.round((a.panx ?? 0.5) * 100)}"
+            onpointerdown="edSnap()" oninput="ED.spec.aspect.panx=+this.value/100;lb('lb-panx',this.value+'%');edLive()"></label>
         <label>Zoom <b id="lb-zoom">${a.zoom.toFixed(2)}×</b>
           <input type="range" min="100" max="220" value="${Math.round(a.zoom * 100)}"
             onpointerdown="edSnap()" oninput="ED.spec.aspect.zoom=+this.value/100;lb('lb-zoom',(this.value/100).toFixed(2)+'×');edLive()"></label>

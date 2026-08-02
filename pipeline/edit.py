@@ -109,7 +109,8 @@ def apply(job: dict, clip: dict, spec: dict, *, source: Optional[Path] = None) -
     if cap_spec.get("cues"):
         captions.write_srt(srt, cap_spec["cues"])
     style = {k: cap_spec[k] for k in
-             ("size_wide", "margin_wide", "outline", "color", "outline_color")
+             ("size_wide", "margin_wide", "outline", "color", "outline_color",
+              "x", "width")
              if k in cap_spec}
     # The UI sends friendlier names; map them.
     if "size" in cap_spec:

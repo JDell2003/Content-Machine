@@ -43,7 +43,15 @@ DEFAULTS = {
     # Plain #RRGGBB here; converted to ASS's &HBBGGRR on the way out.
     "color": "#FFFFFF",
     "outline_color": "#000000",
+    # Horizontal placement and how wide the text box is. Width is what decides
+    # wrapping: a narrower box breaks a line in two, a wider one keeps it on one.
+    "x": 0.5,        # 0 = hard left, 1 = hard right
+    "width": 0.88,   # fraction of the frame the text may occupy
 }
+
+# libass renders SRT against a 384x288 script by default. Margins are in those
+# units, so every conversion below goes through this rather than pixels.
+PLAY_RES_X = 384
 
 
 def _ass_colour(hex_rgb: str) -> str:
@@ -118,10 +126,21 @@ def force_style(vertical: bool, override: Optional[dict] = None) -> str:
     s.update({k: v for k, v in (override or {}).items() if v is not None})
     size = s["size_vertical"] if vertical else s["size_wide"]
     margin = s["margin_vertical"] if vertical else s["margin_wide"]
+
+    # Left/right margins do double duty: their SUM sets how wide the text box is
+    # (and therefore where lines wrap), and their DIFFERENCE shifts it sideways.
+    # That is how a drag on the video becomes something ffmpeg can burn.
+    width = max(0.25, min(1.0, float(s.get("width", 0.88))))
+    x = max(0.0, min(1.0, float(s.get("x", 0.5))))
+    side = (1.0 - width) * PLAY_RES_X          # total padding to distribute
+    left = int(round(side * x))
+    right = int(round(side * (1.0 - x)))
+
     return (f"FontName=Arial Black,Fontsize={int(size)},Bold={1 if s['bold'] else 0},"
             f"PrimaryColour={_ass_colour(s['color'])},"
             f"OutlineColour={_ass_colour(s['outline_color'])},BorderStyle=1,"
-            f"Outline={int(s['outline'])},Shadow=1,Alignment=2,MarginV={int(margin)}")
+            f"Outline={int(s['outline'])},Shadow=1,Alignment=2,"
+            f"MarginV={int(margin)},MarginL={left},MarginR={right}")
 
 
 # --------------------------------------------------------------- srt editing
