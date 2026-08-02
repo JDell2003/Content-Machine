@@ -120,7 +120,20 @@
   .ed-tab{flex:1;min-height:38px;background:var(--panel2);color:var(--muted);
           border:1px solid var(--line);border-radius:8px;font-size:13px;font-weight:700}
   .ed-tab.on{background:var(--accent);color:#20160a;border-color:var(--accent)}
-  .ed-panel{margin-top:10px;max-height:38vh;overflow:auto}
+  .ed-panel{margin-top:10px;max-height:44vh;overflow:auto}
+  /* Previews are portrait stills; unconstrained they fill the panel and read as
+     a second video. Cap the height and centre them. */
+  .ed-previmg{display:block;margin:10px auto 0;max-height:30vh;max-width:100%;
+              width:auto;border-radius:10px;background:#000}
+  .ed-cols{display:block}
+  .ed-cues{max-height:26vh;overflow:auto}
+  @media (min-width:900px){
+    .ed-cols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,320px);
+             gap:14px;align-items:start}
+    .ed-previmg{margin:0;max-height:42vh}
+    .ed-panel{max-height:52vh}
+    .ed-cues{max-height:38vh}
+  }
   .ed-panel label{display:block;margin-top:8px;font-size:13px;color:var(--muted)}
   .ed-panel input[type=range]{width:100%}
   .ed-panel input[type=text]{width:100%;min-height:40px;font-size:14px;padding:0 10px;
@@ -323,6 +336,78 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "ArrowLeft") decide("rejected");
 });
 
+// ---------------------------------------------------- live audio preview
+// Routes the video's audio through WebAudio so voice changes are audible while
+// it plays, instead of only after a render.
+//
+// HONEST about what this can and cannot do. The render chain is
+// highpass -> RNNoise -> dereverb gate -> EQ -> de-ess -> compressor -> loudnorm.
+// The browser can do the filtering and the dynamics; it CANNOT do RNNoise
+// denoise or two-pass loudness. So this previews the SHAPE of the voice — the
+// tone, the presence lift, the gate, the level — and the denoise is the one
+// part you still judge from "Hear 12s", which renders through real ffmpeg.
+let ACTX = null, ASRC = null, ANODES = null, AWIRED = null;
+
+function edAudioWire() {
+  const v = edVid();
+  if (!v || AWIRED === v) return;
+  try {
+    ACTX = ACTX || new (window.AudioContext || window.webkitAudioContext)();
+    // A MediaElementSource can only be created ONCE per element; creating a
+    // second one throws and kills audio for the whole page.
+    ASRC = ACTX.createMediaElementSource(v);
+
+    const hp = ACTX.createBiquadFilter();   hp.type = "highpass";
+    const lp = ACTX.createBiquadFilter();   lp.type = "lowpass";
+    const mud = ACTX.createBiquadFilter();  mud.type = "peaking"; mud.frequency.value = 300; mud.Q.value = 1.2;
+    const pres = ACTX.createBiquadFilter(); pres.type = "peaking"; pres.frequency.value = 3000; pres.Q.value = 1.5;
+    const comp = ACTX.createDynamicsCompressor();
+    const gain = ACTX.createGain();
+
+    ASRC.connect(hp); hp.connect(lp); lp.connect(mud); mud.connect(pres);
+    pres.connect(comp); comp.connect(gain); gain.connect(ACTX.destination);
+
+    ANODES = { hp, lp, mud, pres, comp, gain };
+    AWIRED = v;
+    edAudioApply();
+  } catch (e) {
+    ANODES = null;   // fall back to the plain element; never break playback
+  }
+}
+
+// Mirrors pipeline/audio_fx.py PRESETS so what you hear tracks what will render.
+const APRESETS = {
+  office:  { hpf: 85,  top: 14000, warmth: -3.0, presence: 2.0, gate: 0.55 },
+  gym:     { hpf: 100, top: 13000, warmth: -2.0, presence: 2.5, gate: 0.35 },
+  quiet:   { hpf: 75,  top: 15000, warmth: -1.5, presence: 1.5, gate: 0.20 },
+  raw:     { hpf: 70,  top: 0,     warmth: 0,    presence: 0,   gate: 0 },
+};
+
+function edAudioApply() {
+  const v = edVid();
+  if (!v || !ED) return;
+  const a = ED.spec.audio || {};
+  const k = Math.max(0, Math.min(1.5, +a.intensity ?? 1));
+  const p = APRESETS[a.preset] || APRESETS.office;
+
+  // Volume works with or without the graph.
+  const vol = Math.pow(10, (+a.volume_db || 0) / 20);
+  if (!ANODES) { v.volume = Math.max(0, Math.min(1, vol)); return; }
+  v.volume = 1;
+
+  ANODES.hp.frequency.value = p.hpf;
+  ANODES.lp.frequency.value = p.top || 20000;
+  ANODES.mud.gain.value = p.warmth * k;
+  ANODES.pres.gain.value = p.presence * k;
+  // The compressor stands in for compand + the dereverb gate: more gating means
+  // a harder knee and more make-up, which is what ducking the tail sounds like.
+  ANODES.comp.threshold.value = -24 - 8 * p.gate * k;
+  ANODES.comp.ratio.value = 3 + 4 * p.gate * k;
+  ANODES.comp.attack.value = 0.02;
+  ANODES.comp.release.value = 0.25;
+  ANODES.gain.value = vol * (1 + 0.35 * k);   // rough stand-in for loudnorm
+}
+
 // ---------------------------------------------------------- undo / redo
 // A plain snapshot stack. The spec is small JSON, so storing whole copies is
 // simpler and less bug-prone than diffing, and 50 of them costs nothing.
@@ -398,9 +483,7 @@ function edLive() {
     }
   }
 
-  // volume
-  const au = sp.audio || {};
-  v.volume = Math.max(0, Math.min(1, Math.pow(10, (+au.volume_db || 0) / 20)));
+  edAudioApply();
 
 }
 
@@ -491,7 +574,8 @@ async function edOpen() {
   ED.cuesClean = JSON.stringify(ED.cues || []);
   document.getElementById("editor").style.display = "";
   document.getElementById("edtoggle").textContent = "Hide editor";
-  edWireTimeline(); edPaintTimeline(); edTab("captions"); edLive(); edTick();
+  edWireTimeline(); edPaintTimeline(); edTab("captions"); edLive();
+  edAudioWire(); edTick();
 }
 
 function edToggle() {
@@ -511,7 +595,7 @@ function edDirty() {
          JSON.stringify(ED.cues || []) !== ED.cuesClean;
 }
 
-function edClose() { ED = null; document.getElementById("editor").style.display = "none"; }
+function edClose() { ED = null; ASRC = null; ANODES = null; AWIRED = null; document.getElementById("editor").style.display = "none"; }
 
 function edPaintTimeline() {
   if (!ED) return;
@@ -604,7 +688,7 @@ function edTab(which) {
   const sp = ED.spec;
   if (which === "captions") {
     const cap = sp.captions;
-    P.innerHTML = `
+    P.innerHTML = `<div class="ed-cols"><div>
       <label>Size <b id="lb-size">${cap.size}</b>
         <input type="range" min="10" max="46" value="${cap.size}"
           onpointerdown="edSnap()" oninput="ED.spec.captions.size=+this.value;lb('lb-size',this.value);edCapPreview()"></label>
@@ -619,38 +703,42 @@ function edTab(which) {
         ["#FFFFFF", "#F5A524", "#3FB950", "#F85149", "#00E5FF", "#FFD479"].map(h =>
         `<div class="ed-swatch ${cap.color === h ? "on" : ""}" style="background:${h}"
            onclick="edSnap();ED.spec.captions.color='${h}';edTab('captions')"></div>`).join("")}</div>
-      <img id="ed-capprev" style="width:100%;border-radius:10px;background:#000;margin-top:10px">
-      <div class="muted" style="font-size:12px">Preview is drawn on the raw frame, so this
-        is the real size, colour and height — the clip's own captions are already burned in
-        and can't be un-drawn.</div>
       <label style="margin-top:12px">Wording — empty a line to drop that caption</label>
-      <div>${(ED.cues || []).map((q, i) => `
+      <div class="ed-cues">${(ED.cues || []).map((q, i) => `
         <div style="display:flex;gap:6px;align-items:center;margin-bottom:5px">
           <span class="muted" style="font-size:11px;min-width:46px">${q.start.slice(3, 8)}</span>
-          <input type="text" value="${esc(q.text)}" onchange="edSnap()" oninput="ED.cues[${i}].text=this.value;edLive()">
-        </div>`).join("")}</div>`;
+          <input type="text" value="${esc(q.text)}" onchange="edSnap()"
+                 oninput="ED.cues[${i}].text=this.value">
+        </div>`).join("")}</div>
+      </div>
+      <div>
+        <img id="ed-capprev" class="ed-previmg">
+        <div class="muted" style="font-size:12px;margin-top:6px">Real size, colour and
+          height, drawn on the raw frame. The clip's own captions are already burned into
+          the pixels and cannot be un-drawn, which is why this is a still and not the video.</div>
+      </div></div>`;
     edCapPreview();
   } else if (which === "audio") {
     const a = sp.audio;
     P.innerHTML = `
       <label>Voice preset</label>
-      <select style="width:100%" onchange="ED.spec.audio.preset=this.value">
+      <select style="width:100%" onchange="edSnap();ED.spec.audio.preset=this.value;edAudioApply()">
         ${Object.entries(ED.audio_presets).map(([k, l]) =>
           `<option value="${k}"${k === a.preset ? " selected" : ""}>${esc(l)}</option>`).join("")}
       </select>
       <label>Strength <b id="lb-aint">${Math.round(a.intensity * 100)}%</b>
         <input type="range" min="0" max="150" value="${Math.round(a.intensity * 100)}"
-          onpointerdown="edSnap()" oninput="ED.spec.audio.intensity=+this.value/100;lb('lb-aint',this.value+'%')"></label>
+          onpointerdown="edSnap()" oninput="ED.spec.audio.intensity=+this.value/100;lb('lb-aint',this.value+'%');edAudioApply()"></label>
       <label>Volume <b id="lb-vol">${a.volume_db > 0 ? "+" : ""}${a.volume_db} dB</b>
         <input type="range" min="-12" max="12" step="1" value="${a.volume_db}"
-          onpointerdown="edSnap()" oninput="ED.spec.audio.volume_db=+this.value;lb('lb-vol',(this.value>0?'+':'')+this.value+' dB');edLive()"></label>
+          onpointerdown="edSnap()" oninput="ED.spec.audio.volume_db=+this.value;lb('lb-vol',(this.value>0?'+':'')+this.value+' dB');edAudioApply()"></label>
       <button class="ghost" style="margin-top:10px" onclick="edHear()">Hear 12s</button>
       <div id="ed-aprev" style="margin-top:8px"></div>
       <div class="muted" style="margin-top:8px;font-size:12px">Metallic or warbly? That's the
         noise remover working too hard — turn Strength <b>down</b>. "Level only" disables it.</div>`;
   } else if (which === "color") {
     const c = sp.color;
-    P.innerHTML = `
+    P.innerHTML = `<div class="ed-cols"><div>
       <label>Grade</label>
       <select style="width:100%" onchange="edSnap();ED.spec.color.preset=this.value;edPreview();edLive()">
         ${Object.entries(ED.color_presets).map(([k, l]) =>
@@ -660,9 +748,11 @@ function edTab(which) {
         <input type="range" min="0" max="150" value="${Math.round(c.intensity * 100)}"
           onpointerdown="edSnap()" oninput="ED.spec.color.intensity=+this.value/100;lb('lb-cint',this.value+'%');edLive()"
           onchange="edPreview()"></label>
-      <img id="ed-prev" style="width:100%;border-radius:10px;background:#000;margin-top:8px">
-      <div class="muted" style="font-size:12px">Preview is from the raw recording, so you're
-        seeing this grade on its own — not stacked on the one already applied.</div>`;
+      </div><div>
+        <img id="ed-prev" class="ed-previmg">
+        <div class="muted" style="font-size:12px;margin-top:6px">From the raw recording, so
+          you see this grade on its own — not stacked on the one already applied.</div>
+      </div></div>`;
     edPreview();
   } else {
     const a = sp.aspect;

@@ -184,3 +184,65 @@ def vision_prompt(*, clips_frames: list[dict]) -> str:
         "visual_verdict is PASS or FLAG.",
     ]
     return "\n".join(lines)
+
+
+def shortlist_prompt(*, profile: str, shared: str, profile_block: str,
+                     exemplars: str, tuning: str, clips: list[dict],
+                     keep: int) -> str:
+    """A second, HARDER pass over the clips that already won the first round.
+
+    Why this exists: the first pass scores every candidate in isolation, in
+    batches, against a rubric. That is good at "is this postable" and bad at
+    "is this better than the other 59", because no batch ever sees the whole
+    field. This pass does — one call, every survivor, ranked against each other.
+
+    It also stops the machine rendering clips it will never post. At two a day,
+    21 clips is ten days of runway; rendering 60 means ~39 encodes, roughly 45
+    minutes, thrown away.
+    """
+    lines = [
+        f"You already picked {len(clips)} clips for the {profile} profile out of a "
+        f"long recording. Now cut them down to the {keep} BEST.",
+        "",
+        "This is a harder bar than the first pass. There, the question was 'is this "
+        "postable'. Here it is 'would I be embarrassed if this went out instead of "
+        "one of the others'. You can see the whole field at once, which the first "
+        "pass could not.",
+        "",
+        "== THE RULES THEY WERE PICKED AGAINST ==", shared, "",
+        f"== PROFILE: {profile} ==", profile_block, "",
+    ]
+    if exemplars:
+        lines += ["== WHAT HE LOVES ==", exemplars[:2000], ""]
+    if tuning:
+        lines += ["== LEARNED FROM PAST REJECTIONS ==", tuning, ""]
+
+    lines += ["== THE CANDIDATES ==", ""]
+    for c in clips:
+        lines.append(
+            f"[{c['cid']}] score {c.get('score')} · {c.get('structure','?')} · "
+            f"{c.get('topic','?')} · {c.get('duration_s',0):.0f}s\n"
+            f"HOOK: {c.get('hook','')}\n"
+            f"{(c.get('text') or '')[:700]}\n")
+
+    lines += [
+        "== HOW TO CHOOSE ==",
+        f"- Keep exactly {keep}, or fewer if fewer genuinely clear the bar. Never pad.",
+        "- Cut near-duplicates. Same idea told twice = keep the better telling only.",
+        "- Cut anything that opens on a pronoun or 'this' with no antecedent — a "
+        "  stranger scrolling has no context.",
+        "- Cut anything that needs the rest of the conversation to make sense.",
+        "- Prefer a complete thought over a strong opening that trails off.",
+        "- SPREAD: do not take everything from one stretch of the recording or one "
+        "  topic. A week of posts should not sound like one meeting.",
+        "- Shorter is usually better. If two are equal, keep the tighter one.",
+        "",
+        "Reply with ONLY this JSON, no prose:",
+        '{"keep":[{"cid":"c001","rank":1,"why":"one line: why this beat the others"}],'
+        '"cut_reasons":[{"cid":"c009","why":"near-duplicate of c001, weaker open"}]}',
+        "",
+        "- `keep` ordered best first.",
+        "- `cut_reasons` only for the notable cuts, not all of them. This is what "
+        "  gets reviewed when the shortlist looks wrong.",
+    ]
+    return "\n".join(lines)

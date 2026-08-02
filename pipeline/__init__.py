@@ -26,10 +26,14 @@ MAX_RANK_CALLS = 3
 # (arnndn denoise, EQ, compressor) is CPU-bound, so serial rendering pegged one
 # core and left the other 15 - and most of the encoder - idle.
 RENDER_WORKERS = 3
-# A 67-minute recording yielded 4 clips at a cap of 8 and a floor of 55 — far too
-# stingy for a source that long. Volume with variety is the goal; overlap and
-# repetition are acceptable because the same idea told two ways are two posts.
-MAX_RENDER_PER_PROFILE = 60
+# How many clips actually get RENDERED. At the default cadence (2/day) this is
+# ten days of runway. It was 60, which meant rendering ~39 clips that would
+# never be posted — about 45 minutes of encoding thrown away every run.
+MAX_RENDER_PER_PROFILE = 21
+# How many survive the first ranking pass and go into the shortlist call. Wider
+# than the final cut on purpose: the second pass needs a real field to choose
+# from, and reading 60 transcripts is one cheap call against 39 wasted encodes.
+SHORTLIST_POOL = 60
 SCORE_FLOOR = 45
 
 
@@ -209,10 +213,53 @@ def run_pipeline(*, job: dict, info: dict, report: Callable[..., None], cfg) -> 
                            "profile_tag": str(r.get("profile_tag") or profile).upper(),
                            "peak_lines": r.get("peak_lines") or []})
         merged.sort(key=lambda c: -c["score"])
-        merged = _diversify(merged, MAX_RENDER_PER_PROFILE)
+        merged = _diversify(merged, SHORTLIST_POOL)
         if not merged:
             report(message=f"{profile}: nothing scored above {SCORE_FLOOR}")
             continue
+
+        # ---- 3b. shortlist: one harder pass over the survivors ------------
+        # The ranking pass scores candidates in isolation, in batches, so no
+        # batch ever sees the whole field. This one does — every survivor, one
+        # call, judged against each other. It also stops the machine rendering
+        # clips it will never post: at 2/day, 21 is ten days of runway, and
+        # rendering 60 throws ~39 encodes (about 45 minutes) away.
+        if len(merged) > MAX_RENDER_PER_PROFILE:
+            report(stage="rank", progress=span0 + span * 0.38,
+                   message=f"{profile}: second pass, {len(merged)} -> "
+                           f"{MAX_RENDER_PER_PROFILE} best")
+            try:
+                short = brain.ask_json(
+                    prompts.shortlist_prompt(
+                        profile=profile, shared=fw["SHARED"],
+                        profile_block=fw.get(profile, ""), exemplars=exemplars,
+                        tuning=tune.load(), clips=merged,
+                        keep=MAX_RENDER_PER_PROFILE),
+                    label=f"shortlist:{profile}", model=cfg.RANK_MODEL,
+                    mode=cfg.BRAIN_MODE, timeout_s=cfg.BRAIN_TIMEOUT_S, job_id=job_id)
+                keep_ids = [str(k.get("cid")) for k in (short.get("keep") or [])]
+                why_by_cid = {str(k.get("cid")): str(k.get("why") or "")
+                              for k in (short.get("keep") or [])}
+                by_cid_all = {c["cid"]: c for c in merged}
+                picked = [by_cid_all[c] for c in keep_ids if c in by_cid_all]
+                if picked:
+                    for c in picked:
+                        if why_by_cid.get(c["cid"]):
+                            c["shortlist_why"] = why_by_cid[c["cid"]]
+                    cuts = short.get("cut_reasons") or []
+                    report(message=f"{profile}: kept {len(picked)}"
+                                   + (f", e.g. cut {cuts[0].get('cid')} — "
+                                      f"{str(cuts[0].get('why'))[:70]}" if cuts else ""))
+                    merged = picked[:MAX_RENDER_PER_PROFILE]
+                else:
+                    # A malformed reply must not silently drop every clip.
+                    report(message=f"{profile}: shortlist returned nothing usable; "
+                                   f"falling back to top {MAX_RENDER_PER_PROFILE} by score")
+                    merged = merged[:MAX_RENDER_PER_PROFILE]
+            except brain.BrainError as exc:
+                report(message=f"{profile}: shortlist call failed ({str(exc)[:80]}); "
+                               f"using top {MAX_RENDER_PER_PROFILE} by score")
+                merged = merged[:MAX_RENDER_PER_PROFILE]
 
         # ---- 4. captions + review (ONE call for the whole video) ---------
         if _cancelled(job_id):
