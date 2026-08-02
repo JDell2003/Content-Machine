@@ -1,0 +1,259 @@
+{% extends "base.html" %}
+{% block title %}Calendar — Content Machine{% endblock %}
+{% block n7 %}on{% endblock %}
+{% block body %}
+
+<div id="pane-cal">
+  <div class="card">
+    <h2>Posting cadence</h2>
+    <p class="muted">The cadence is a <b>ceiling, not a quota</b>. Approve twenty clips
+      and the queue runs forward into future days — it never floods today to clear a
+      backlog. And a slot with no approved clip stays empty. That is a normal outcome,
+      not a hole to fill.</p>
+
+    <div class="muted" style="font-weight:700;margin:14px 0 6px">Phase</div>
+    <div id="phases" class="row" style="gap:6px;flex-wrap:wrap"></div>
+    <div id="capnote" class="muted" style="margin-top:8px;color:var(--warn)"></div>
+
+    <div class="muted" style="font-weight:700;margin:14px 0 6px">Slot times</div>
+    <div id="times"></div>
+    <div class="row" style="gap:6px;margin-top:8px">
+      <input id="newtime" type="time" value="11:30" style="flex:1">
+      <button class="ghost" style="width:auto;padding:8px 14px" onclick="addTime()">Add</button>
+    </div>
+
+    <div class="muted" style="font-weight:700;margin:14px 0 6px">Days</div>
+    <div id="days" class="row" style="gap:4px;flex-wrap:wrap"></div>
+
+    <label class="muted" style="display:block;margin-top:14px">Minimum gap between posts
+      <b id="gaplab"></b>
+      <input type="range" min="0" max="12" step="1" id="gap" style="width:100%" onchange="saveSched({min_gap_hours:+this.value})"></label>
+
+    <div id="schedstats" class="muted" style="margin-top:12px"></div>
+  </div>
+  <div class="card" id="month"></div>
+  <div id="warnbox"></div>
+  <div id="cal"></div>
+</div>
+
+<style>
+  .cal-head{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+  .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px}
+  .cal-dow{margin-bottom:4px}
+  .cal-dowc{text-align:center;font-size:11px;font-weight:700;color:var(--muted)}
+  .cal-cell{min-height:88px;border:1px solid var(--line);border-radius:8px;padding:5px;
+            background:var(--panel2);cursor:pointer;overflow:hidden}
+  .cal-cell.cal-out{background:transparent;border-color:transparent;cursor:default}
+  .cal-cell.cal-has{background:#1c2431;border-color:#33507a}
+  .cal-cell.cal-today{outline:2px solid var(--accent)}
+  .cal-num{font-size:11px;color:var(--muted);font-weight:700}
+  .cal-chip{font-size:10px;line-height:1.25;margin-top:3px;padding:2px 4px;border-radius:4px;
+            background:rgba(245,165,36,.16);color:var(--ink);
+            white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .cal-chip b{color:var(--accent)}
+  .cal-more{font-size:10px;color:var(--muted);margin-top:2px}
+  .cal-slot{display:flex;gap:10px;align-items:baseline;padding:6px 0}
+  .cal-time{font-family:monospace;color:var(--accent);min-width:52px}
+  .ed-icon{width:auto;min-height:34px;padding:0 14px;background:var(--panel2);color:var(--ink);
+           border:1px solid var(--line);border-radius:8px;font-size:15px;flex:0 0 auto}
+  @media (min-width:1100px){ main{max-width:1100px} }
+</style>
+
+<script>
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+// ------------------------------------------------------- month calendar
+// A real month grid rather than a list of days, so "what am I posting and when"
+// is one glance. Days with posts are filled; empty days are just empty — no
+// colour, no badge, no nudge. That restraint is deliberate (see schedule.py).
+let CALMONTH = null;   // Date pinned to the 1st of the shown month
+
+function calShift(n) {
+  const d = CALMONTH || new Date();
+  CALMONTH = new Date(d.getFullYear(), d.getMonth() + n, 1);
+  paintMonth();
+}
+
+function paintMonth() {
+  const host = document.getElementById("month");
+  if (!host || !SCHED) return;
+  if (!CALMONTH) CALMONTH = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+
+  const y = CALMONTH.getFullYear(), m = CALMONTH.getMonth();
+  const first = new Date(y, m, 1);
+  const daysIn = new Date(y, m + 1, 0).getDate();
+  // Monday-first, matching the day toggles in the cadence settings.
+  const lead = (first.getDay() + 6) % 7;
+
+  // slot -> posts, keyed by YYYY-MM-DD
+  const byDay = {};
+  for (const slot of (SCHED.calendar || [])) {
+    if (!slot.clip) continue;
+    (byDay[slot.day] = byDay[slot.day] || []).push(slot);
+  }
+
+  const todayKey = new Date().toISOString().slice(0, 10);
+  let cells = "";
+  for (let i = 0; i < lead; i++) cells += `<div class="cal-cell cal-out"></div>`;
+  for (let d = 1; d <= daysIn; d++) {
+    const key = `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    const items = byDay[key] || [];
+    const isToday = key === todayKey;
+    cells += `<div class="cal-cell${items.length ? " cal-has" : ""}${isToday ? " cal-today" : ""}"
+                   onclick="calDay('${key}')">
+      <div class="cal-num">${d}</div>
+      ${items.slice(0, 3).map(s => `<div class="cal-chip" title="${esc(s.clip.hook || "")}">
+          <b>${s.time}</b> ${esc((s.clip.hook || "").slice(0, 22))}</div>`).join("")}
+      ${items.length > 3 ? `<div class="cal-more">+${items.length - 3} more</div>` : ""}
+    </div>`;
+  }
+
+  host.innerHTML = `
+    <div class="cal-head">
+      <button class="ed-icon" onclick="calShift(-1)">‹</button>
+      <b style="flex:1;text-align:center">${first.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</b>
+      <button class="ed-icon" onclick="calShift(1)">›</button>
+    </div>
+    <div class="cal-grid cal-dow">${["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
+      .map(n => `<div class="cal-dowc">${n}</div>`).join("")}</div>
+    <div class="cal-grid">${cells}</div>`;
+}
+
+function calDay(key) {
+  const items = (SCHED.calendar || []).filter(s => s.day === key && s.clip);
+  const host = document.getElementById("cal");
+  if (!items.length) {
+    host.innerHTML = `<div class="card"><p class="muted">Nothing scheduled on
+      ${new Date(key + "T00:00").toLocaleDateString(undefined,{weekday:"long",month:"long",day:"numeric"})}.
+      An empty day is a normal outcome, not a gap to fill.</p></div>`;
+    return;
+  }
+  host.innerHTML = `<div class="card" style="padding:12px">
+    <b>${new Date(key + "T00:00").toLocaleDateString(undefined,{weekday:"long",month:"short",day:"numeric"})}</b>
+    ${items.map(s => `<div class="cal-slot">
+        <span class="cal-time">${s.time}</span>
+        <span style="flex:1">${esc((s.clip.hook || "").slice(0, 66))}
+          <div class="muted" style="font-size:12px">${esc(s.clip.source_name || "")}</div></span>
+        <button class="ghost" style="width:auto;padding:4px 9px;font-size:12px"
+          onclick="unschedule('${s.clip.job_id}','${s.clip.clip_id}')">remove</button>
+        <button class="ghost" style="width:auto;padding:4px 9px;font-size:12px"
+          onclick="markPosted('${s.clip.job_id}','${s.clip.clip_id}')">posted</button>
+      </div>`).join("")}</div>`;
+}
+
+const DAYNAMES = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+let SCHED = null;
+
+async function loadCal() {
+  const r = await fetch("/api/schedule");
+  if (!r.ok) return;
+  SCHED = await r.json();
+  const s = SCHED.settings;
+
+  document.getElementById("phases").innerHTML = Object.entries(SCHED.phases).map(([k, l]) =>
+    `<button class="${k === SCHED.phase ? "" : "ghost"}" style="flex:1;min-width:120px;font-size:13px"
+       onclick="saveSched({phase:'${k}'})">${esc(l)}</button>`).join("");
+  document.getElementById("capnote").textContent = SCHED.capacity_note || "";
+  document.getElementById("gap").value = SCHED.min_gap_hours ?? 5;
+  document.getElementById("gaplab").textContent = (SCHED.min_gap_hours ?? 5) + "h";
+  document.getElementById("times").innerHTML = s.slots.map(t =>
+    `<span class="tag" style="cursor:pointer" onclick="dropTime('${t}')">${t} ✕</span>`).join(" ");
+  document.getElementById("days").innerHTML = DAYNAMES.map((n, i) =>
+    `<button class="${s.days.includes(i) ? "" : "ghost"}" style="flex:1;min-width:56px;padding:8px 0"
+       onclick="toggleDay(${i})">${n}</button>`).join("");
+
+  // Queue depth, framed as being AHEAD. Never as a backlog to clear.
+  document.getElementById("schedstats").innerHTML =
+    `<b>${SCHED.queued}</b> scheduled · ceiling <b>${SCHED.per_day}/day</b> · ` +
+    `<b>${SCHED.days_of_runway}</b> days of runway` +
+    (SCHED.beyond_window ? ` · <b>${SCHED.beyond_window}</b> queued beyond the next 14 days (you're ahead)` : "");
+
+  document.getElementById("warnbox").innerHTML = (SCHED.warnings || []).length
+    ? `<div class="card" style="padding:12px"><div class="muted" style="color:var(--warn)">
+         ⚑ ${SCHED.warnings.length} back-to-back from the same source video — fine if deliberate,
+         worth a shuffle if not. Warning only, nothing is blocked.</div></div>` : "";
+
+  // Group slots by day. Empty slots render plainly — no colour, no count, no nudge.
+  const byDay = {};
+  for (const slot of SCHED.calendar) (byDay[slot.day] = byDay[slot.day] || []).push(slot);
+  paintMonth();
+  document.getElementById("cal").innerHTML = Object.keys(byDay).map(day => {
+    const nice = new Date(day + "T00:00").toLocaleDateString(undefined,
+      { weekday: "long", month: "short", day: "numeric" });
+    return `<div class="card" style="padding:12px"><b>${nice}</b>
+      ${byDay[day].map(slot => slot.clip ? `<div class="cal-slot" draggable="true"
+            ondragstart="dragStart(event,'${slot.clip.job_id}','${slot.clip.clip_id}')"
+            ondragover="event.preventDefault()" ondrop="dropOn(event,'${slot.at}')">
+          <span class="cal-time">${slot.time}</span>
+          <span style="flex:1">${esc((slot.clip.hook || "").slice(0, 66))}
+            <div class="muted" style="font-size:12px">${esc(slot.clip.source_name || "")}</div></span>
+          <button class="ghost" style="width:auto;padding:4px 9px;font-size:12px"
+            onclick="unschedule('${slot.clip.job_id}','${slot.clip.clip_id}')">remove</button>
+          <button class="ghost" style="width:auto;padding:4px 9px;font-size:12px"
+            onclick="markPosted('${slot.clip.job_id}','${slot.clip.clip_id}')">posted</button>
+        </div>` : `<div class="cal-slot" ondragover="event.preventDefault()"
+            ondrop="dropOn(event,'${slot.at}')">
+          <span class="cal-time">${slot.time}</span>
+          <span class="muted" style="flex:1">open</span></div>`).join("")}
+    </div>`;
+  }).join("");
+}
+
+// Drag a clip onto any slot to pin it there. A pinned clip keeps its slot while
+// the rest of the queue flows around it — dropping onto its own slot un-pins it.
+let DRAG = null;
+function dragStart(e, job_id, clip_id) {
+  DRAG = { job_id, clip_id };
+  e.dataTransfer.effectAllowed = "move";
+}
+async function dropOn(e, at) {
+  e.preventDefault();
+  if (!DRAG) return;
+  const body = { ...DRAG, at };
+  DRAG = null;
+  const r = await fetch("/api/schedule/pin", { method: "POST",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!r.ok) { alert((await r.text()).slice(0, 200)); return; }
+  loadCal();
+}
+
+async function unschedule(job_id, clip_id) {
+  if (!confirm("Take this clip out of the queue? It goes back to undecided.")) return;
+  await fetch("/api/schedule/unschedule", { method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ job_id, clip_id }) });
+  loadCal();
+}
+
+// Settings writes. Each re-reads the schedule so the grid shows the real
+// assignment rather than an optimistic guess.
+async function saveSched(patch) {
+  const r = await fetch("/api/schedule", { method: "POST",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+  if (r.ok) { SCHED = await r.json(); loadCal(); }
+}
+function addTime() {
+  const t = document.getElementById("newtime").value;
+  if (t) saveSched({ slots: [...SCHED.settings.slots, t] });
+}
+function dropTime(t) {
+  const left = SCHED.settings.slots.filter(x => x !== t);
+  if (!left.length) return alert("Keep at least one time.");
+  saveSched({ slots: left });
+}
+function toggleDay(i) {
+  const d = SCHED.settings.days.includes(i)
+    ? SCHED.settings.days.filter(x => x !== i) : [...SCHED.settings.days, i];
+  if (!d.length) return alert("Keep at least one day.");
+  saveSched({ days: d });
+}
+async function markPosted(job_id, clip_id) {
+  await fetch("/api/schedule/posted", { method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ job_id, clip_id, posted: true }) });
+  loadCal();
+}
+
+loadCal();
+</script>
+{% endblock %}

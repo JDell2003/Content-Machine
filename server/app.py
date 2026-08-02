@@ -450,6 +450,11 @@ async def schedule_unschedule(body: dict = Body(...)):
     return _s.build(jobs.all_jobs())
 
 
+@app.get("/calendar", response_class=HTMLResponse)
+async def calendar_page(request: Request):
+    return TEMPLATES.TemplateResponse(request, "calendar.html", {})
+
+
 @app.get("/swipe", response_class=HTMLResponse)
 async def swipe_page(request: Request):
     return TEMPLATES.TemplateResponse(request, "swipe.html", {})
