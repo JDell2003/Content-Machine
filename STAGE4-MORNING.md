@@ -1,146 +1,133 @@
-# Stage 4 — the morning list
+# Stage 4 — everything on port 3000, no Postiz
 
-Everything that could be done without you is done. What's left is two things
-only you can do, because they live behind your Facebook login.
-
-**Auto-posting is NOT live yet.** It cannot be until you do steps 2 and 4 below.
-Budget about 10 minutes.
+Postiz is gone. What replaced it, why, and the three things only you can do.
 
 ---
 
-## Where things stand
+## What changed and why
 
-| | |
+**Postiz's backend was crashed**, not misconfigured. The current image needs a
+**Temporal** workflow service my compose file never included:
+
+```
+connect ECONNREFUSED ::1:7233
+nginx: connect() failed while connecting to upstream 127.0.0.1:3000
+```
+
+That is what "Could not add provider" was. The backend never started, so the
+frontend had nothing to talk to.
+
+**And a correction to what I told you earlier.** I said no tunnel was needed. I
+checked that OAuth would work over localhost and stopped there. But Instagram's
+publishing API does not accept a file upload — you give it a `video_url` and
+**Meta's servers download it**. A localhost-only server cannot serve that. So
+publishing would have failed at the acceptance test with Postiz working
+perfectly. That was my mistake.
+
+Given both, Postiz was ~1.2 GB of RAM and four containers wrapping two HTTP
+calls. It is now removed and Instagram is called directly:
+
+| before | now |
 |---|---|
-| Postiz | **running**, http://localhost:5000, HTTP 200 |
-| postiz-postgres | up, healthy |
-| postiz-redis | up, healthy |
-| Docker data | on **D:\DockerData** (8.5 GB), C: has 10.7 GB free |
-| Approve & Schedule | **built and wired**, waiting on credentials |
-| Post registry | **built** — media id is captured at publish for UP3 |
-
-### Resource footprint (measured, idle)
-
-```
-postiz            0.45% CPU    1.13 GB RAM
-postiz-postgres   0.00% CPU      49 MB
-postiz-redis      0.13% CPU       8 MB
-                             ~1.19 GB total
-```
-
-Negligible CPU at idle. It will spike briefly while uploading a clip.
-
-**No Cloudflare Tunnel was needed.** Postiz is bound to `127.0.0.1:5000`. Meta's
-redirect only has to be reachable by the browser doing the connecting — which is
-this PC — and publishing afterwards is outbound. Nothing needs to reach in from
-the internet, so nothing is exposed to it. One less moving part, still $0.
+| Content Machine :3000 + Postiz :5000 | **:3000 only** |
+| postiz + postgres + redis + temporal | none |
+| ~1.2 GB RAM idle | 0 |
+| two addresses to remember | one |
 
 ---
 
-## 1. Create the Postiz account (1 min, local only)
+## The one thing that must be public, and how little it is
 
-Open **http://localhost:5000** and register. First account owns the instance.
-`DISABLE_REGISTRATION` is false so this works; consider flipping it to `true`
-afterwards so the box can't grow a second account.
-
----
-
-## 2. Meta console — the redirect URI and scopes  ← YOUR CLICKS
-
-**developers.facebook.com → your app (ID 1750415476382679)**
-
-### The redirect URI — exact, read off the running container
+Instagram has to fetch the video, so exactly one route is exposed:
 
 ```
-http://localhost:5000/integrations/social/instagram
+/share/<32-random-characters>
 ```
 
-Use `instagram`, **not** `instagram-standalone`. Standalone is for Instagram
-Login without a Facebook Page; yours goes through the RiseForIt Page, which is
-the `instagram` provider.
+* random token, maps to ONE file, expires in 30 minutes, revoked the moment
+  publishing finishes
+* unknown and expired tokens both 404 — indistinguishable from outside
+* the Cloudflare tunnel config forwards **only** `/share/*`. Every other path is
+  refused at Cloudflare's edge and never reaches this machine.
 
-### Where to paste it
-
-**Facebook Login for Business → Settings → Valid OAuth Redirect URIs**
-
-### Use cases and permissions
-
-The current console is the use-case dashboard, so the old flat scope list is now
-grouped. Add the use case:
-
-- **Instagram → "Manage messaging and content on Instagram"** (or whatever the
-  console labels the Instagram publishing use case for your app type)
-
-Then under **Customise → Permissions**, make sure these are added:
-
-| permission | why |
-|---|---|
-| `instagram_basic` | read the connected IG account |
-| `instagram_content_publish` | **the one that actually posts** |
-| `pages_show_list` | find the RiseForIt Page |
-| `pages_read_engagement` | read the Page↔IG link |
-| `business_management` | resolve the business asset |
-| `instagram_manage_insights` | UP3 metrics later |
-| `pages_manage_posts` | only if you also post to the Page itself |
-
-If a permission shows "Requires App Review", that's expected while unreviewed —
-it still works for accounts with a **role on the app**, which is what step 4
-relies on.
+Verified just now: `/share/bogus` -> 404, `/api/jobs` -> 401 without a session.
 
 ---
 
-## 3. Paste the credentials  ← YOUR CLICKS
+## 1. Cloudflare tunnel  <- YOUR CLICKS  (~5 min, free)
 
-In Postiz: **Settings → Public API** → generate a key.
+You need a domain on Cloudflare (a spare one is fine; it does not have to be
+riseforit.com).
 
-Then in `D:\ContentMachine\.env`:
-
-```
-CM_POSTIZ_API_KEY=<the key from Postiz>
-CM_POSTIZ_INTEGRATION_ID=<the Instagram integration id, after step 4>
-CM_SCHEDULE_DEFAULT=1        # makes the Schedule toggle default ON
+```powershell
+winget install --id Cloudflare.cloudflared    # or download the .exe
+cloudflared tunnel login
+cloudflared tunnel create contentmachine
+cloudflared tunnel route dns contentmachine clips.<your-domain>
 ```
 
-`postiz/.env` already has your App ID and Secret. **Rotate that secret** — it
-went through a chat transcript.
+Then edit `tunnel/config.yml` — replace the three `REPLACE_WITH_*` values with
+the tunnel UUID (printed by `create`) and your hostname. Run it:
 
-Restart the Content Machine after editing (`run.bat`).
-
----
-
-## 4. Connect Instagram  ← YOUR CLICKS
-
-In Postiz: **Add Channel → Instagram** → it opens Facebook → authorise → pick
-the **RiseForIt Page** → pick **jason_odell_coaching**.
-
-If it refuses: your app is in Live mode, but Instagram publishing often still
-wants Business Verification. The fast way past that is **App Roles → Roles →
-Add Instagram Tester**, invite `jason_odell_coaching`, then accept the invite
-inside the Instagram app (Settings → Website Permissions → Tester Invites).
-
-Once connected, copy the **integration id** into `CM_POSTIZ_INTEGRATION_ID`.
+```powershell
+cloudflared tunnel --config D:\ContentMachine	unnel\config.yml run
+```
 
 ---
 
-## 5. Acceptance test
+## 2. Instagram credentials  <- YOUR CLICKS
 
-1. Content Machine → **Swipe**
-2. The **Approve & schedule** toggle should now be enabled (it greys itself out
-   and says why when it can't work — it never pretends)
-3. Swipe right on one clip
-4. It goes to the **next open calendar slot**, not "now" — the governor decides.
-   For a 10-minute test, add a slot time 10 minutes out on the Calendar tab.
-5. Check `/patterns` — the post should be listed with its **media id**
+You need two values. Easiest route is the Graph API Explorer
+(developers.facebook.com/tools/explorer):
 
-If the push fails, the clip is still approved and downloadable. That ordering is
-deliberate: the approval commits first, so a Postiz error never costs you the
-clip.
+1. Pick your app (**1750415476382679**), then **Generate Access Token** with:
+   `instagram_basic`, `instagram_content_publish`, `pages_show_list`,
+   `pages_read_engagement`, `business_management`, `instagram_manage_insights`
+2. Query `me/accounts` -> find the RiseForIt Page -> copy its **id**
+3. Query `{page-id}?fields=instagram_business_account` -> that **id** is your
+   IG user id
+4. **Exchange for a long-lived token** (the short one dies in ~1 hour):
+   `GET /oauth/access_token?grant_type=fb_exchange_token&client_id=<APP_ID>
+   &client_secret=<APP_SECRET>&fb_exchange_token=<SHORT_TOKEN>`
+
+No redirect URI and no OAuth handshake is needed any more — that was a Postiz
+requirement, not an Instagram one.
 
 ---
 
-## What is deliberately NOT automated
+## 3. Paste into `D:\ContentMachine\.env`
 
-Nothing here publishes on its own without you approving a clip. The cadence
-governor is a ceiling, not a quota: surplus approvals extend into future days
-rather than flooding today, and an empty slot stays empty. There is no backfill
-prompt anywhere, by design.
+```
+CM_IG_USER_ID=<the instagram_business_account id>
+CM_IG_ACCESS_TOKEN=<the LONG-LIVED token>
+CM_PUBLIC_HOST=clips.<your-domain>
+CM_SCHEDULE_DEFAULT=1
+```
+
+Restart with `run.bat`. Also still worth doing: **rotate the App Secret** in
+`postiz/.env` — it went through a chat transcript.
+
+---
+
+## 4. Acceptance test
+
+1. **Swipe** -> the "Approve & schedule" toggle enables itself once all three
+   values are set. Until then it greys out and names exactly what is missing.
+2. Swipe right on one clip.
+3. It mints a share link, hands Instagram the URL, waits for Meta to finish
+   transcoding, publishes, then revokes the link.
+4. `/patterns` should list the post with its **media id** and permalink.
+
+If the publish fails, the clip is still approved and downloadable. The approval
+commits first, separately, on purpose.
+
+---
+
+## Honest status
+
+**Auto-posting is not live.** Steps 1-3 need your hands: a Cloudflare account,
+a Facebook login, and pasting three values. Nothing in the code can do those.
+
+Everything on this side is built and verified: publish path, media checks
+against Meta's limits, share tokens, registry capture of the media id, and the
+insights pull for UP3.

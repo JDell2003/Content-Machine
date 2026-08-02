@@ -1,0 +1,32 @@
+# Cloudflare named tunnel — exposes ONE path, nothing else.
+#
+# Instagram's publishing API fetches the video from a URL you give it, so
+# something has to be reachable from the internet. This is the smallest version
+# of that: /share/<random-token> and nothing more.
+#
+# The last rule is the important one. Ingress rules match top-down, so anything
+# that is not /share/* hits the catch-all and is refused AT CLOUDFLARE'S EDGE —
+# it never reaches this machine. The review UI, the clip list, the job API and
+# the source recordings are not routable from outside even though the app
+# listens on a single port.
+#
+# Setup (one time):
+#   cloudflared tunnel login
+#   cloudflared tunnel create contentmachine
+#   cloudflared tunnel route dns contentmachine clips.<your-domain>
+#   put the tunnel's UUID and credentials path below
+#   cloudflared tunnel --config tunnel/config.yml run
+#
+# Then set CM_PUBLIC_HOST=clips.<your-domain> in .env
+
+tunnel: REPLACE_WITH_TUNNEL_UUID
+credentials-file: C:\Users\jason\.cloudflared\REPLACE_WITH_TUNNEL_UUID.json
+
+ingress:
+  # The only thing the internet can reach.
+  - hostname: REPLACE_WITH_HOSTNAME
+    path: ^/share/.*
+    service: http://localhost:3000
+
+  # Everything else, refused at the edge.
+  - service: http_status:404

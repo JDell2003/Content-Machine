@@ -31,6 +31,12 @@ TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
 
 OPEN_PATHS = {"/login", "/healthz"}
+# /share/<token> is deliberately outside the PIN. Instagram's servers fetch the
+# video themselves and carry no session. The token is 32 random chars, maps to
+# one file, and expires in 30 minutes — and the Cloudflare tunnel only forwards
+# /share/*, so nothing else is reachable from outside even though it is one app
+# on one port.
+OPEN_PREFIXES = ("/static/", "/share/")
 
 
 def _authed(request: Request) -> bool:
@@ -40,7 +46,7 @@ def _authed(request: Request) -> bool:
 @app.middleware("http")
 async def require_pin(request: Request, call_next):
     path = request.url.path
-    if path in OPEN_PATHS or path.startswith("/static/"):
+    if path in OPEN_PATHS or path.startswith(OPEN_PREFIXES):
         return await call_next(request)
     if not _authed(request):
         if path.startswith("/api/"):
@@ -547,18 +553,71 @@ async def clip_edit_apply(job_id: str, clip_id: str, body: dict = Body(...)):
             "grade": clip.get("grade"), "audio_fx": clip.get("audio_fx")}
 
 
+# ---------------------------------------------------------- public share link
+@app.get("/share/{token}")
+async def share(token: str, request: Request):
+    """Serve one finished clip by random, expiring token. No session required —
+    this exists so Instagram's servers can download the video."""
+    from pipeline import share as _sh  # noqa: PLC0415
+    path = _sh.resolve(token)
+    if path is None:
+        # Unknown and expired look identical from outside, on purpose.
+        raise HTTPException(404, "not found")
+    total = path.stat().st_size
+    rng = request.headers.get("range") or request.headers.get("Range")
+    if not rng or not rng.startswith("bytes="):
+        return FileResponse(path, media_type="video/mp4",
+                            headers={"Content-Length": str(total),
+                                     "Accept-Ranges": "bytes",
+                                     "Cache-Control": "no-store"})
+    try:
+        start_s, _, end_s = rng[6:].partition("-")
+        start = int(start_s or 0)
+        end = int(end_s) if end_s else total - 1
+    except ValueError:
+        start, end = 0, total - 1
+    start = max(0, min(start, total - 1))
+    end = max(start, min(end, total - 1))
+
+    def _chunks():
+        with path.open("rb") as fh:
+            fh.seek(start)
+            left = end - start + 1
+            while left > 0:
+                buf = fh.read(min(262144, left))
+                if not buf:
+                    break
+                left -= len(buf)
+                yield buf
+
+    return StreamingResponse(_chunks(), status_code=206, media_type="video/mp4",
+                             headers={"Content-Range": f"bytes {start}-{end}/{total}",
+                                      "Accept-Ranges": "bytes",
+                                      "Content-Length": str(end - start + 1),
+                                      "Cache-Control": "no-store"})
+
+
 # ------------------------------------------------------- approve & schedule
 @app.get("/api/schedule/status")
 async def schedule_status():
     """Is the publish path actually usable? The UI needs to know the difference
     between 'ready' and 'will silently just approve'."""
-    from pipeline import postiz_client as _p  # noqa: PLC0415
     import os  # noqa: PLC0415
+    from pipeline import instagram as _ig  # noqa: PLC0415
+    cfg = {"ig_user_id": os.environ.get("CM_IG_USER_ID") or "",
+           "access_token": os.environ.get("CM_IG_ACCESS_TOKEN") or ""}
+    host = (os.environ.get("CM_PUBLIC_HOST") or "").strip()
+    missing = []
+    if not cfg["ig_user_id"]:
+        missing.append("IG user id")
+    if not cfg["access_token"]:
+        missing.append("access token")
+    if not host:
+        missing.append("public host (tunnel)")
     return {
-        "postiz_url": os.environ.get("CM_POSTIZ_URL") or "",
-        "has_key": bool(os.environ.get("CM_POSTIZ_API_KEY")),
-        "has_integration": bool(os.environ.get("CM_POSTIZ_INTEGRATION_ID")),
-        "configured": _p.configured() and bool(os.environ.get("CM_POSTIZ_INTEGRATION_ID")),
+        "has_ig": _ig.configured(cfg), "has_host": bool(host),
+        "configured": _ig.configured(cfg) and bool(host),
+        "missing": missing,
         "default_on": str(os.environ.get("CM_SCHEDULE_DEFAULT") or "0").lower()
                       in {"1", "true", "yes", "on"},
     }
@@ -566,53 +625,73 @@ async def schedule_status():
 
 @app.post("/api/clips/{job_id}/{clip_id}/approve-schedule")
 async def approve_and_schedule(job_id: str, clip_id: str, body: dict = Body(default={})):
-    """Approve the clip AND push it to Postiz for its next open calendar slot.
+    """Approve the clip, then publish it to Instagram.
 
-    Deliberate ordering: the approval is committed FIRST and separately. If the
-    Postiz push then fails, you still have an approved clip you can download and
-    post by hand — the download path stays the permanent fallback, never a
-    casualty of a scheduling error.
+    Deliberate ordering: the approval commits FIRST and separately. If the
+    publish then fails you still have an approved, downloadable clip — the
+    download path stays the permanent fallback, never a casualty of a publish
+    error.
     """
     import os  # noqa: PLC0415
-    from pipeline import postiz_client as _p, registry as _r, schedule as _s  # noqa: PLC0415
+    from pipeline import instagram as _ig, registry as _r, share as _sh  # noqa: PLC0415
 
     job = jobs.load(job_id)
     if not job:
         raise HTTPException(404, "no such job")
     clip = _find_clip(job, clip_id)
 
-    # 1. approve (same bookkeeping the plain approve does)
     clip["decision"] = "approved"
     clip["decided_at"] = time.time()
     clip.setdefault("approved_at", clip["decided_at"])
     jobs.update(job_id, clips=job["clips"])
 
     if not body.get("schedule", True):
-        return {"ok": True, "approved": True, "scheduled": False, "reason": "toggle off"}
+        return {"ok": True, "approved": True, "published": False, "reason": "toggle off"}
 
-    # 2. which slot? the governor decides — never "now", never same-hour
-    plan = _s.build(jobs.all_jobs())
-    slot = next((c.get("scheduled_at") for c in plan["clips"]
-                 if c.get("clip_id") == clip_id), None)
+    cfg = {"ig_user_id": os.environ.get("CM_IG_USER_ID") or "",
+           "access_token": os.environ.get("CM_IG_ACCESS_TOKEN") or ""}
+    host = (os.environ.get("CM_PUBLIC_HOST") or "").strip().rstrip("/")
+    if not _ig.configured(cfg):
+        return {"ok": True, "approved": True, "published": False,
+                "reason": "Instagram not connected yet"}
+    if not host:
+        return {"ok": True, "approved": True, "published": False,
+                "reason": "no public host set — Instagram must fetch the video, "
+                          "so CM_PUBLIC_HOST and the tunnel are required"}
 
-    integration = os.environ.get("CM_POSTIZ_INTEGRATION_ID") or ""
-    if integration:
-        clip["postiz_integration_id"] = integration
-    res = _p.schedule_clip(clip, variant=str(body.get("variant") or "wide"),
-                           when_iso=slot)
+    path = Path(clip.get("path") or "")
+    bad = _ig.check_media(path, float(clip.get("duration_s") or 0))
+    if bad:
+        return {"ok": True, "approved": True, "published": False, "reason": bad}
+
+    caption = str(clip.get("caption") or clip.get("hook") or "").strip()
+    tags = " ".join(str(x) for x in (clip.get("hashtags") or []))
+    text = (caption + ("\n\n" + tags if tags else "")).strip()
+
+    token = _sh.mint(path, note=clip_id)
+    try:
+        res = _ig.publish(video_url=f"https://{host}/share/{token}",
+                          caption=text, cfg=cfg)
+    finally:
+        _sh.revoke(token)   # one publish, then the link is dead
 
     if res.get("ok"):
         _r.record_published(
             job_id=job_id, clip_id=clip_id, platform="instagram",
-            media_id=str(res.get("media_id") or ""), slot_at=slot or "",
+            media_id=str(res.get("media_id") or ""),
+            permalink=str(res.get("permalink") or ""),
+            slot_at=clip.get("scheduled_at") or "",
             hook=clip.get("hook") or "", source_name=job.get("original_name") or "",
             topic=clip.get("topic") or "", profile=clip.get("profile") or "")
-        clip["scheduled_at"] = slot
+        clip["posted"] = True
+        clip["posted_at"] = time.time()
         clip["media_id"] = res.get("media_id")
+        clip["permalink"] = res.get("permalink")
         jobs.update(job_id, clips=job["clips"])
 
-    return {"ok": True, "approved": True, "scheduled": bool(res.get("ok")),
-            "slot": slot, "reason": res.get("reason"), "media_id": res.get("media_id")}
+    return {"ok": True, "approved": True, "published": bool(res.get("ok")),
+            "reason": res.get("reason"), "media_id": res.get("media_id"),
+            "permalink": res.get("permalink")}
 
 
 # ------------------------------------------------------------ post registry
