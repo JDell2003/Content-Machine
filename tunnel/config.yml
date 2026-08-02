@@ -19,12 +19,12 @@
 #
 # Then set CM_PUBLIC_HOST=clips.<your-domain> in .env
 
-tunnel: REPLACE_WITH_TUNNEL_UUID
-credentials-file: C:\Users\jason\.cloudflared\REPLACE_WITH_TUNNEL_UUID.json
+tunnel: 60fc362a-677b-4e20-8d16-e5b2cf081881
+credentials-file: C:\Users\jason\.cloudflared\60fc362a-677b-4e20-8d16-e5b2cf081881.json
 
 ingress:
   # The only thing the internet can reach.
-  - hostname: REPLACE_WITH_HOSTNAME
+  - hostname: clips.riseforitclips.com
     path: ^/share/.*
     service: http://localhost:3000
 

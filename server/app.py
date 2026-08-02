@@ -558,6 +558,29 @@ async def clip_edit_apply(job_id: str, clip_id: str, body: dict = Body(...)):
             "grade": clip.get("grade"), "audio_fx": clip.get("audio_fx")}
 
 
+@app.post("/api/clips/{job_id}/{clip_id}/sharelink")
+async def clip_sharelink(job_id: str, clip_id: str, body: dict = Body(default={})):
+    """Mint a temporary public URL for one clip. PIN-gated (only /share/<token>
+    itself is open). Used by the publish path, and handy for checking the tunnel
+    without waiting on Instagram."""
+    import os  # noqa: PLC0415
+    from pipeline import share as _sh  # noqa: PLC0415
+    job = jobs.load(job_id)
+    if not job:
+        raise HTTPException(404, "no such job")
+    clip = _find_clip(job, clip_id)
+    path = Path(clip.get("path") or "")
+    if not path.exists():
+        raise HTTPException(404, "clip has no file")
+    host = (os.environ.get("CM_PUBLIC_HOST") or "").strip().rstrip("/")
+    if not host:
+        raise HTTPException(400, "CM_PUBLIC_HOST is not set")
+    ttl = max(60, min(3600, int(body.get("ttl_s") or 900)))
+    token = _sh.mint(path, ttl_s=ttl, note=clip_id)
+    return {"url": f"https://{host}/share/{token}", "expires_in_s": ttl,
+            "size_mb": round(path.stat().st_size / 1e6, 1)}
+
+
 # ---------------------------------------------------------- public share link
 @app.get("/share/{token}")
 async def share(token: str, request: Request):
