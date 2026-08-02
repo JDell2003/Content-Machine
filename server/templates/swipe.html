@@ -11,10 +11,7 @@
 <!-- ------------------------------------------------------------- swipe deck -->
 <div id="pane-deck">
   <div class="card" style="padding:12px">
-    <div class="row" style="align-items:center">
-      <div style="flex:1" class="muted" id="deckcount">loading…</div>
-      <button class="ghost" style="width:auto;padding:6px 14px" onclick="edToggle()">Edit</button>
-    </div>
+    <div class="muted" id="deckcount">loading…</div>
   </div>
 
   <div id="stage" class="sw-stage">
@@ -27,7 +24,7 @@
   </div>
 
   <!-- ------------------------------------------------------------- editor -->
-  <div id="editor" class="ed" style="display:none">
+  <div id="editor" class="ed">
     <div class="ed-bar">
       <button class="ed-icon" title="Play / pause" onclick="edPlay()">▶</button>
       <span class="ed-time" id="ed-time">0:00 / 0:00</span>
@@ -58,11 +55,14 @@
     <div class="ed-panel" id="ed-panel"></div>
 
     <div class="row" style="gap:8px;margin-top:10px">
-      <button class="ghost" onclick="edClose()">Close</button>
-      <button id="ed-apply" onclick="edApply()">Apply edits</button>
+      <button class="ghost" id="ed-all" onclick="edApplyAll()">Use this style for all</button>
+      <button id="ed-apply" onclick="edApply()">Apply to this clip</button>
     </div>
     <div id="ed-status" class="muted" style="margin-top:6px"></div>
   </div>
+
+  <button class="ghost" id="edtoggle" style="margin-top:10px" onclick="edToggle()">
+    Hide editor</button>
 
   <div class="sw-actions">
     <button class="sw-btn bad" onclick="decide('rejected')" title="Reject">✕</button>
@@ -213,7 +213,7 @@ function render() {
     </div>`;
   stage.appendChild(el);
   wireDrag(el);
-  if (ED) { edClose(); }
+  edOpen();
 }
 
 // Drag with pointer events so one code path covers finger and mouse.
@@ -269,6 +269,13 @@ async function decide(verdict, alreadyFlew) {
     if (!pick) { if (alreadyFlew) render(); return; }
     await send(c, { verdict, reason: pick.reason, note: pick.note });
   } else {
+    // Unsaved edits are burned in BEFORE the approval, so what you approved is
+    // what gets posted. Skipped entirely when nothing was touched.
+    if (edDirty() && ED && ED.clip_id === c.id) {
+      const st = document.getElementById("ed-status");
+      if (st) st.textContent = "saving your edits before approving…";
+      await edApply();
+    }
     if (!alreadyFlew) { const el = document.querySelector(".sw-card"); if (el) fly(el, true); }
     const tg = document.getElementById("schedtoggle");
     if (tg && tg.checked && SCHEDOK) {
@@ -352,12 +359,31 @@ async function edOpen() {
   ED.spec.audio = ED.spec.audio || { preset: "office", intensity: 1, volume_db: 0 };
   ED.spec.color = ED.spec.color || { preset: "office", intensity: 1 };
   ED.spec.aspect = ED.spec.aspect || { ratio: "original", pan: 0.5, zoom: 1 };
+  // Snapshot as opened. Approving only spends a render if something ACTUALLY
+  // changed — otherwise a green swipe on an untouched clip would re-encode it
+  // for nothing.
+  ED.clean = JSON.stringify(ED.spec);
+  ED.cuesClean = JSON.stringify(ED.cues || []);
   document.getElementById("editor").style.display = "";
+  document.getElementById("edtoggle").textContent = "Hide editor";
   edWireTimeline(); edPaintTimeline(); edTab("captions"); edTick();
 }
 
 function edToggle() {
-  if (ED) { edClose(); } else { edOpen(); }
+  const box = document.getElementById("editor");
+  const btn = document.getElementById("edtoggle");
+  if (!ED) { edOpen(); return; }
+  const hidden = box.style.display === "none";
+  box.style.display = hidden ? "" : "none";
+  btn.textContent = hidden ? "Hide editor" : "Show editor";
+}
+
+// Approving only spends a render when something ACTUALLY changed — otherwise a
+// green swipe on an untouched clip would re-encode it for nothing.
+function edDirty() {
+  if (!ED) return false;
+  return JSON.stringify(ED.spec) !== ED.clean ||
+         JSON.stringify(ED.cues || []) !== ED.cuesClean;
 }
 
 function edClose() { ED = null; document.getElementById("editor").style.display = "none"; }
@@ -540,6 +566,34 @@ function edHear() {
     + `&clip_id=${encodeURIComponent(ED.clip_id)}&preset=${a.preset}&intensity=${a.intensity}&_=${Date.now()}"></audio>`;
 }
 
+// Styling (caption look, voice, grade, ratio) becomes the default for every
+// clip from here on. Deliberately does NOT re-render the other 112 clips —
+// that is over an hour of encoding, and it would be a rude thing to start from
+// a button labelled "apply". Each clip picks the style up when you edit or
+// re-render it.
+async function edApplyAll() {
+  if (!ED) return;
+  const btn = document.getElementById("ed-all");
+  const cap = ED.spec.captions, a = ED.spec.audio, c = ED.spec.color;
+  btn.disabled = true; btn.textContent = "Saving…";
+  try {
+    await Promise.all([
+      fetch("/api/captions/settings", { method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ size_wide: cap.size, margin_wide: cap.margin,
+                               outline: cap.outline, color: cap.color }) }),
+      fetch("/api/look", { method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ audio_preset: a.preset, audio_intensity: a.intensity,
+                               color_preset: c.preset, color_intensity: c.intensity }) }),
+    ]);
+    document.getElementById("ed-status").innerHTML =
+      `<span style="color:var(--ok)">Saved as the default for every clip.</span>
+       <span class="muted">Clips already rendered keep their current look until
+       you edit or re-render them — this does not silently re-encode 112 clips.</span>`;
+  } finally { btn.disabled = false; btn.textContent = "Use this style for all"; }
+}
+
 async function edApply() {
   const btn = document.getElementById("ed-apply");
   const st = document.getElementById("ed-status");
@@ -563,6 +617,7 @@ async function edApply() {
     const v = edVid();
     if (v) { v.src = v.src.split("&_=")[0] + "&_=" + Date.now(); }  // bust the cache
     ED.dur = out.duration_s; ED.spec.trim = [0, ED.dur]; ED.spec.cuts = [];
+    ED.clean = JSON.stringify(ED.spec); ED.cuesClean = JSON.stringify(ED.cues || []);
     edPaintTimeline();
   } finally { btn.disabled = false; btn.textContent = "Apply edits"; }
 }
@@ -671,8 +726,7 @@ async function schedStatus() {
     // Never let the toggle imply a capability that isn't wired up.
     document.getElementById("schedwhy").innerHTML = st.configured ? ""
       : `<span style="color:var(--warn)">Instagram not connected yet — approving still
-         works and clips stay downloadable.${st.has_key ? "" : " Missing Postiz API key."}
-         ${st.has_integration ? "" : " Missing integration id."}</span>`;
+         works and clips stay downloadable. Missing: ${esc((st.missing || []).join(", "))}.</span>`;
   } catch (e) {}
 }
 schedStatus();
@@ -715,8 +769,7 @@ async function schedStatus() {
     // Never let the toggle imply a capability that isn't wired up.
     document.getElementById("schedwhy").innerHTML = st.configured ? ""
       : `<span style="color:var(--warn)">Instagram not connected yet — approving still
-         works and clips stay downloadable.${st.has_key ? "" : " Missing Postiz API key."}
-         ${st.has_integration ? "" : " Missing integration id."}</span>`;
+         works and clips stay downloadable. Missing: ${esc((st.missing || []).join(", "))}.</span>`;
   } catch (e) {}
 }
 schedStatus();
