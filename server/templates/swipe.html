@@ -105,8 +105,12 @@
               max-width:100%}
   /* With a ratio chosen the box drives the shape: fixed height, width derived
      from the ratio, and the video switches to cover so the crop is real. */
-  #frame-live.ratio video{object-fit:cover;max-height:none;cursor:grab}
-  #frame-live.ratio video:active{cursor:grabbing}
+  #frame-live.ratio video{object-fit:cover;max-height:none}
+  /* Sits over the video but stops above the scrub bar, so panning and playback
+     controls do not fight each other. */
+  .pan-layer{position:absolute;left:0;right:0;top:0;bottom:46px;z-index:4;
+             cursor:grab;touch-action:none}
+  .pan-layer:active{cursor:grabbing}
   .sw-meta{padding:12px}
   .sw-stamp{position:absolute;top:18px;font-size:26px;font-weight:900;padding:6px 14px;
             border-radius:10px;border:4px solid;opacity:0;pointer-events:none;transform:rotate(-12deg)}
@@ -545,28 +549,54 @@ function edLive() {
 // gets encoded.
 let VIDDRAG = null;
 
-function edVideoDragWire(v) {
-  if (!v || v.dataset.panwired) return;
-  v.dataset.panwired = "1";
+// A <video> with native controls eats pointer drags — the browser's own control
+// layer claims them before any listener sees a move. So the drag lives on a
+// transparent layer ABOVE the video instead of on the video itself. It only
+// exists while a ratio is chosen, and stops short of the bottom so the scrub
+// bar is still reachable.
+function edPanLayer() {
+  const box = document.getElementById("frame-live");
+  if (!box) return null;
+  let el = document.getElementById("pan-layer");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "pan-layer";
+    el.className = "pan-layer";
+    // Insert BEFORE the caption overlay so dragging the caption still wins.
+    box.insertBefore(el, document.getElementById("cap-live"));
+    edVideoDragWire(el);
+  }
+  const a = (ED && ED.spec.aspect) || {};
+  const on = !!a.ratio && a.ratio !== "original";
+  el.style.display = on ? "" : "none";
+  return el;
+}
 
-  v.addEventListener("pointerdown", (e) => {
+function edVideoDragWire(el) {
+  if (!el || el.dataset.panwired) return;
+  el.dataset.panwired = "1";
+
+  el.addEventListener("pointerdown", (e) => {
     if (!ED) return;
     const a = ED.spec.aspect || {};
-    if (!a.ratio || a.ratio === "original") return;   // nothing to pan
-    // Leave the bottom strip alone so the native controls still work.
-    const r = v.getBoundingClientRect();
-    if (e.clientY > r.bottom - 44) return;
-    VIDDRAG = { x0: e.clientX, y0: e.clientY, w: r.width, h: r.height,
+    if (!a.ratio || a.ratio === "original") return;
+    const r = el.getBoundingClientRect();
+    VIDDRAG = { x0: e.clientX, y0: e.clientY, w: r.width, h: r.height, moved: false,
                 pan: a.pan ?? 0.5, panx: a.panx ?? 0.5 };
-    v.setPointerCapture(e.pointerId);
-    edSnap();
-    e.preventDefault();
+    VIDDRAG.id = e.pointerId;
+    e.stopPropagation();
   });
 
-  v.addEventListener("pointermove", (e) => {
+  el.addEventListener("pointermove", (e) => {
     if (!VIDDRAG || !ED) return;
-    // Inverted: dragging the picture down should reveal what is ABOVE it, the
-    // way moving a photo under a mask behaves.
+    if (!VIDDRAG.moved) {
+      if (Math.hypot(e.clientX - VIDDRAG.x0, e.clientY - VIDDRAG.y0) < 4) return;
+      VIDDRAG.moved = true;
+      el.setPointerCapture(VIDDRAG.id);
+      edSnap();
+    }
+    // Inverted: dragging the picture down reveals what is ABOVE it, the way
+    // moving a photo under a mask behaves.
     const dx = (e.clientX - VIDDRAG.x0) / VIDDRAG.w;
     const dy = (e.clientY - VIDDRAG.y0) / VIDDRAG.h;
     const a = ED.spec.aspect;
@@ -579,11 +609,10 @@ function edVideoDragWire(v) {
   const stop = () => {
     if (!VIDDRAG) return;
     VIDDRAG = null;
-    // Refresh the panel so the sliders show where you dragged it to.
-    if (document.querySelector('.ed-tab.on')?.dataset.t === "aspect") edTab("aspect");
+    if (document.querySelector(".ed-tab.on")?.dataset.t === "aspect") edTab("aspect");
   };
-  v.addEventListener("pointerup", stop);
-  v.addEventListener("pointercancel", stop);
+  el.addEventListener("pointerup", stop);
+  el.addEventListener("pointercancel", stop);
 }
 
 // ------------------------------------------- direct caption manipulation
@@ -627,7 +656,10 @@ function edCaptionLive() {
     ? [`${o}px ${o}px 0 #000`, `-${o}px ${o}px 0 #000`,
        `${o}px -${o}px 0 #000`, `-${o}px -${o}px 0 #000`].join(",")
     : "none";
-  if (document.activeElement !== t) t.textContent = edCueAt(v.currentTime) || "";
+  // Never overwrite the text while it is being typed into.
+  if (t.contentEditable !== "true" && document.activeElement !== t) {
+    t.textContent = edCueAt(v.currentTime) || "";
+  }
   ov.style.display = t.textContent ? "" : "none";
 }
 
@@ -654,23 +686,33 @@ function edCaptionWire(ov) {
     e.stopPropagation();     // don't let arrows swipe the card away
   });
 
+  // NOTE: pointerdown must NOT preventDefault. Doing so suppresses the focus
+  // and dblclick that follow, which is exactly why double-clicking the caption
+  // did nothing. The drag only "arms" here; it does not commit until the
+  // pointer actually MOVES past a threshold, so a plain click or double-click
+  // is left alone.
   ov.addEventListener("pointerdown", (e) => {
     if (text.contentEditable === "true") return;
     const b = box().getBoundingClientRect();
     const edge = e.target.classList.contains("cap-hl") ? "l"
                : e.target.classList.contains("cap-hr") ? "r" : "move";
-    CAPDRAG = { edge, b, x0: e.clientX, y0: e.clientY,
+    CAPDRAG = { edge, b, x0: e.clientX, y0: e.clientY, moved: false, id: e.pointerId,
                 x: ED.spec.captions.x ?? 0.5,
                 w: ED.spec.captions.width ?? 0.88,
                 m: ED.spec.captions.margin ?? 70 };
-    ov.setPointerCapture(e.pointerId);
-    edSnap();
-    e.preventDefault(); e.stopPropagation();
+    e.stopPropagation();
   });
   ov.addEventListener("pointermove", (e) => {
     if (!CAPDRAG || !ED) return;
-    const dx = (e.clientX - CAPDRAG.x0) / CAPDRAG.b.width;
-    const dy = (e.clientY - CAPDRAG.y0) / CAPDRAG.b.height;
+    const rawx = e.clientX - CAPDRAG.x0, rawy = e.clientY - CAPDRAG.y0;
+    if (!CAPDRAG.moved) {
+      if (Math.hypot(rawx, rawy) < 4) return;   // still a click, not a drag
+      CAPDRAG.moved = true;
+      ov.setPointerCapture(CAPDRAG.id);
+      edSnap();
+    }
+    const dx = rawx / CAPDRAG.b.width;
+    const dy = rawy / CAPDRAG.b.height;
     const c = ED.spec.captions;
     if (CAPDRAG.edge === "move") {
       c.x = Math.max(0.1, Math.min(0.9, CAPDRAG.x + dx));
@@ -765,7 +807,7 @@ async function edOpen() {
   document.getElementById("editor").style.display = "";
   document.getElementById("edtoggle").textContent = "Hide editor";
   edWireTimeline(); edPaintTimeline(); edTab("captions"); edScript(); edLive();
-  edVideoDragWire(edVid());
+  edPanLayer();
   edAudioWire(); edTick();
 }
 
