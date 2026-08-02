@@ -607,24 +607,29 @@ function edTab(which) {
     P.innerHTML = `
       <label>Size <b id="lb-size">${cap.size}</b>
         <input type="range" min="10" max="46" value="${cap.size}"
-          onpointerdown="edSnap()" oninput="ED.spec.captions.size=+this.value;lb('lb-size',this.value);edLive()"></label>
+          onpointerdown="edSnap()" oninput="ED.spec.captions.size=+this.value;lb('lb-size',this.value);edCapPreview()"></label>
       <label>Height off the bottom <b id="lb-marg">${cap.margin}</b>
         <input type="range" min="10" max="180" value="${Math.min(cap.margin, 180)}"
-          onpointerdown="edSnap()" oninput="ED.spec.captions.margin=+this.value;lb('lb-marg',this.value);edLive()"></label>
+          onpointerdown="edSnap()" oninput="ED.spec.captions.margin=+this.value;lb('lb-marg',this.value);edCapPreview()"></label>
       <label>Outline <b id="lb-out">${cap.outline}</b>
         <input type="range" min="0" max="10" value="${cap.outline}"
-          onpointerdown="edSnap()" oninput="ED.spec.captions.outline=+this.value;lb('lb-out',this.value);edLive()"></label>
+          onpointerdown="edSnap()" oninput="ED.spec.captions.outline=+this.value;lb('lb-out',this.value);edCapPreview()"></label>
       <label>Text colour</label>
       <div class="row" style="gap:6px;flex-wrap:wrap">${
         ["#FFFFFF", "#F5A524", "#3FB950", "#F85149", "#00E5FF", "#FFD479"].map(h =>
         `<div class="ed-swatch ${cap.color === h ? "on" : ""}" style="background:${h}"
-           onclick="edSnap();ED.spec.captions.color='${h}';edTab('captions');edLive()"></div>`).join("")}</div>
+           onclick="edSnap();ED.spec.captions.color='${h}';edTab('captions')"></div>`).join("")}</div>
+      <img id="ed-capprev" style="width:100%;border-radius:10px;background:#000;margin-top:10px">
+      <div class="muted" style="font-size:12px">Preview is drawn on the raw frame, so this
+        is the real size, colour and height — the clip's own captions are already burned in
+        and can't be un-drawn.</div>
       <label style="margin-top:12px">Wording — empty a line to drop that caption</label>
       <div>${(ED.cues || []).map((q, i) => `
         <div style="display:flex;gap:6px;align-items:center;margin-bottom:5px">
           <span class="muted" style="font-size:11px;min-width:46px">${q.start.slice(3, 8)}</span>
           <input type="text" value="${esc(q.text)}" onchange="edSnap()" oninput="ED.cues[${i}].text=this.value;edLive()">
         </div>`).join("")}</div>`;
+    edCapPreview();
   } else if (which === "audio") {
     const a = sp.audio;
     P.innerHTML = `
@@ -685,6 +690,24 @@ function edSetRatio(r) {
   if (r !== "original" && ED.spec.aspect.pan === 0.5) ED.spec.aspect.pan = 0.62;
   edTab("aspect");
   edLive();
+}
+
+let EDCPT = null;
+// Debounced like the colour preview — a slider drag would otherwise fire an
+// ffmpeg call per pixel.
+function edCapPreview() {
+  clearTimeout(EDCPT);
+  EDCPT = setTimeout(() => {
+    const img = document.getElementById("ed-capprev");
+    if (!img || !ED) return;
+    const c = ED.spec.captions, col = ED.spec.color;
+    const sample = ((ED.cues || [])[0] || {}).text || "YOUR CAPTIONS LOOK LIKE THIS";
+    img.src = `/api/preview/frame?job_id=${ED.job_id}&clip_id=${encodeURIComponent(ED.clip_id)}`
+      + `&preset=${col.preset}&intensity=${col.intensity}&width=560`
+      + `&cap_text=${encodeURIComponent(sample)}&cap_size=${c.size}`
+      + `&cap_margin=${c.margin}&cap_color=${encodeURIComponent(c.color)}`
+      + `&cap_outline=${c.outline}&_=${Date.now()}`;
+  }, 300);
 }
 
 let EDPT = null;

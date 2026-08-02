@@ -292,9 +292,17 @@ def _preview_src(job: dict, clip: dict) -> tuple[Path, float]:
 
 @app.get("/api/preview/frame")
 async def preview_frame(job_id: str, clip_id: str, preset: str = "office",
-                        intensity: float = 1.0, width: int = 720):
-    """One graded still, straight from the source. Fast enough to drag a slider."""
-    from pipeline import color as _c  # noqa: PLC0415
+                        intensity: float = 1.0, width: int = 720,
+                        cap_text: str = "", cap_size: int = 0, cap_margin: int = 0,
+                        cap_color: str = "", cap_outline: int = -1):
+    """One graded still, straight from the source. Fast enough to drag a slider.
+
+    Optionally burns a SAMPLE caption at the chosen style. This is the only
+    honest way to preview caption size/colour/height: the source frame has no
+    captions in it, so drawing one here shows the real thing instead of stacking
+    a second set on top of pixels that are already there.
+    """
+    from pipeline import captions as _cap, color as _c  # noqa: PLC0415
     job = jobs.load(job_id)
     if not job:
         raise HTTPException(404, "no such job")
@@ -305,6 +313,27 @@ async def preview_frame(job_id: str, clip_id: str, preset: str = "office",
     chain = _c.fast_filter_chain(preset, float(intensity))
     if chain:
         vf.append(chain)
+
+    tmp_srt = None
+    if cap_text.strip():
+        override = {}
+        if cap_size:
+            override["size_wide"] = int(cap_size)
+        if cap_margin:
+            override["margin_wide"] = int(cap_margin)
+        if cap_color:
+            override["color"] = cap_color
+        if cap_outline >= 0:
+            override["outline"] = int(cap_outline)
+        tmp_srt = config.DATA / "tmp" / f"prevcap_{job_id}_{clip_id}.srt"
+        tmp_srt.parent.mkdir(parents=True, exist_ok=True)
+        # One cue spanning the whole second we are grabbing.
+        tmp_srt.write_text(
+            "1\n00:00:00,000 --> 00:00:10,000\n" + cap_text.strip()[:120] + "\n",
+            encoding="utf-8")
+        esc = str(tmp_srt).replace("\\", "/").replace(":", r"\:")
+        vf.append(f"subtitles='{esc}':force_style='"
+                  f"{_cap.force_style(False, override)}'")
     dest = config.DATA / "tmp" / f"prev_{job_id}_{clip_id}_{preset}_{intensity}.jpg"
     dest.parent.mkdir(parents=True, exist_ok=True)
     args = [shutil.which("ffmpeg") or "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
