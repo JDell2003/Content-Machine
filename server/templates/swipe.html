@@ -1027,23 +1027,40 @@ function edHear() {
 async function edApplyAll() {
   if (!ED) return;
   const btn = document.getElementById("ed-all");
-  const cap = ED.spec.captions, a = ED.spec.audio, c = ED.spec.color;
+  const cap = ED.spec.captions, a = ED.spec.audio, c = ED.spec.color, r = ED.spec.aspect;
   btn.disabled = true; btn.textContent = "Saving…";
   try {
-    await Promise.all([
+    // EVERYTHING, not just the caption look. The ratio in particular used to be
+    // dropped here, so the batch render kept producing source-shaped clips no
+    // matter what you had chosen.
+    const [r1, r2] = await Promise.all([
       fetch("/api/captions/settings", { method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ size_wide: cap.size, margin_wide: cap.margin,
-                               outline: cap.outline, color: cap.color }) }),
+                               outline: cap.outline, color: cap.color,
+                               x: cap.x, width: cap.width }) }),
       fetch("/api/look", { method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ audio_preset: a.preset, audio_intensity: a.intensity,
-                               color_preset: c.preset, color_intensity: c.intensity }) }),
+                               volume_db: a.volume_db,
+                               color_preset: c.preset, color_intensity: c.intensity,
+                               aspect_ratio: r.ratio, aspect_pan: r.pan,
+                               aspect_panx: r.panx, aspect_zoom: r.zoom }) }),
     ]);
+    if (!r1.ok || !r2.ok) {
+      document.getElementById("ed-status").innerHTML =
+        `<span style="color:var(--bad)">Could not save the defaults.</span>`;
+      return;
+    }
+    const bits = [`captions ${cap.size}px ${cap.color}`,
+                  `${c.preset} ${Math.round(c.intensity * 100)}%`,
+                  `voice ${a.preset} ${Math.round(a.intensity * 100)}%`,
+                  `ratio ${r.ratio}`];
     document.getElementById("ed-status").innerHTML =
-      `<span style="color:var(--ok)">Saved as the default for every clip.</span>
-       <span class="muted">Clips already rendered keep their current look until
-       you edit or re-render them — this does not silently re-encode 112 clips.</span>`;
+      `<span style="color:var(--ok)">Saved for every clip: ${esc(bits.join(" · "))}.</span>
+       <span class="muted">Applies to everything rendered from now on. Clips already
+       on disk keep their current look until you edit or re-render them — this does
+       not silently re-encode what is already there.</span>`;
   } finally { btn.disabled = false; btn.textContent = "Use this style for all"; }
 }
 

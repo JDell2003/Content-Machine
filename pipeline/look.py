@@ -18,6 +18,12 @@ SETTINGS = Path(__file__).resolve().parent.parent / "data" / "look-settings.json
 KEYS = {
     "color_preset": str, "color_intensity": float,
     "audio_preset": str, "audio_intensity": float,
+    "volume_db": float,
+    # Aspect belongs here too. Without it, "use this style for all" silently
+    # dropped the ratio — every new clip came out in the source shape no matter
+    # what you had chosen.
+    "aspect_ratio": str, "aspect_pan": float, "aspect_panx": float,
+    "aspect_zoom": float,
     "outro": bool,
 }
 
@@ -29,6 +35,11 @@ def defaults() -> dict:
         "color_intensity": float(getattr(cfg, "COLOR_INTENSITY", 1.0)),
         "audio_preset": getattr(cfg, "AUDIO_PRESET", "office"),
         "audio_intensity": float(getattr(cfg, "AUDIO_INTENSITY", 1.0)),
+        "volume_db": 0.0,
+        "aspect_ratio": "original",
+        "aspect_pan": 0.62,      # captions sit low; a centred crop clips them
+        "aspect_panx": 0.5,
+        "aspect_zoom": 1.0,
         "outro": True,
     }
 
@@ -56,6 +67,10 @@ def save(patch: dict) -> dict:
     # phone form and read straight into an ffmpeg filter string.
     for k in ("color_intensity", "audio_intensity"):
         s[k] = max(0.0, min(1.5, float(s[k])))
+    for k in ("aspect_pan", "aspect_panx"):
+        s[k] = max(0.0, min(1.0, float(s[k])))
+    s["aspect_zoom"] = max(1.0, min(3.0, float(s["aspect_zoom"])))
+    s["volume_db"] = max(-24.0, min(24.0, float(s["volume_db"])))
     SETTINGS.parent.mkdir(parents=True, exist_ok=True)
     SETTINGS.write_text(json.dumps(s, indent=2), encoding="utf-8")
     return s

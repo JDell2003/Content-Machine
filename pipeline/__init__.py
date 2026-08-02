@@ -15,8 +15,8 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
-from . import (audio_fx, audio_gate, brain, color, outro, prompts, render,
-               segment, transcribe)
+from . import (audio_fx, audio_gate, brain, color, edit, outro, prompts,
+               render, segment, transcribe)
 from . import look as _look
 from . import tune
 
@@ -331,6 +331,19 @@ def run_pipeline(*, job: dict, info: dict, report: Callable[..., None], cfg) -> 
                 preset=look["audio_preset"], intensity=float(look["audio_intensity"]))
             grade = color.fast_filter_chain(c_preset, c_amt)
             clip["grade"] = color.describe(c_preset, c_amt)
+
+            # Volume and aspect come from the same saved defaults. Before this,
+            # "use this style for all" saved a ratio that the batch render never
+            # read, so every new clip came out in the source shape.
+            vol = float(look.get("volume_db") or 0)
+            if abs(vol) > 0.1:
+                afilter = f"{afilter},volume={vol:.1f}dB" if afilter else f"volume={vol:.1f}dB"
+            crop, delivery = edit.crop_filter(
+                {"aspect": {"ratio": look.get("aspect_ratio", "original"),
+                            "pan": look.get("aspect_pan", 0.62),
+                            "cx": look.get("aspect_panx", 0.5),
+                            "zoom": look.get("aspect_zoom", 1.0)}}, work)
+            clip["aspect"] = look.get("aspect_ratio", "original")
             # Silence cutting is OFF by default. Even tuned conservatively it
             # clipped words on real speech, and 0.8s saved is not worth a clip
             # that sounds broken. CM_CUT_SILENCE=1 re-enables it.
@@ -359,7 +372,8 @@ def run_pipeline(*, job: dict, info: dict, report: Callable[..., None], cfg) -> 
                                           punch_ins=punches, keeps=keeps,
                                           afilter=afilter, subs_path=(srt if burn else None),
                                           grade=grade, fade_out=fade_out,
-                                          out_duration=c["duration_s"] - trimmed)
+                                          out_duration=c["duration_s"] - trimmed,
+                                          crop=crop, delivery=delivery)
                 clip["path"] = str(wide)
             except Exception as exc:  # noqa: BLE001 - one bad clip must not sink the job
                 clip["render_error"] = f"{type(exc).__name__}: {exc}"[:300]
