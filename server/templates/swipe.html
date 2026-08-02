@@ -8,6 +8,7 @@
   <button id="tab-cal" class="sw-tab" onclick="showTab('cal')">Calendar</button>
 </div>
 
+<div class="sw-split">
 <!-- ------------------------------------------------------------- swipe deck -->
 <div id="pane-deck">
   <div class="card" style="padding:12px">
@@ -51,7 +52,7 @@
     <div class="ed-tabs">
       <button class="ed-tab on" data-t="captions" onclick="edTab('captions')">Captions</button>
       <button class="ed-tab" data-t="audio" onclick="edTab('audio')">Audio</button>
-      <button class="ed-tab" data-t="color" onclick="edTab('color')">Colour</button>
+      <button class="ed-tab" data-t="color" onclick="edTab('color')">Color</button>
       <button class="ed-tab" data-t="aspect" onclick="edTab('aspect')">Ratio</button>
     </div>
     <div class="ed-panel" id="ed-panel"></div>
@@ -111,8 +112,10 @@
 
     <div id="schedstats" class="muted" style="margin-top:12px"></div>
   </div>
+  <div class="card" id="month"></div>
   <div id="warnbox"></div>
   <div id="cal"></div>
+</div>
 </div>
 
 <style>
@@ -167,6 +170,30 @@
              flex:0 0 auto;cursor:pointer}
   .ed-swatch.on{border-color:var(--accent)}
   .cal-day{border-top:1px solid var(--line);padding:10px 0}
+  /* ---- month calendar ---- */
+  .cal-head{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+  .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px}
+  .cal-dow{margin-bottom:4px}
+  .cal-dowc{text-align:center;font-size:11px;font-weight:700;color:var(--muted)}
+  .cal-cell{min-height:74px;border:1px solid var(--line);border-radius:8px;padding:4px;
+            background:var(--panel2);cursor:pointer;overflow:hidden}
+  .cal-cell.cal-out{background:transparent;border-color:transparent;cursor:default}
+  .cal-cell.cal-has{background:#1c2431;border-color:#33507a}
+  .cal-cell.cal-today{outline:2px solid var(--accent)}
+  .cal-num{font-size:11px;color:var(--muted);font-weight:700}
+  .cal-chip{font-size:10px;line-height:1.25;margin-top:2px;padding:2px 3px;border-radius:4px;
+            background:rgba(245,165,36,.16);color:var(--ink);
+            white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .cal-chip b{color:var(--accent)}
+  .cal-more{font-size:10px;color:var(--muted);margin-top:2px}
+  /* On a wide screen show the deck and the calendar together — the whole point
+     of the calendar is seeing what the swipe you are about to make will do. */
+  @media (min-width:1180px){
+    main{max-width:1500px}
+    .sw-tabs{display:none}
+    .sw-split{display:grid;grid-template-columns:minmax(0,560px) minmax(0,1fr);gap:18px;align-items:start}
+    #pane-cal{display:block !important}
+  }
   .cal-slot{display:flex;gap:10px;align-items:baseline;padding:6px 0}
   .cal-time{font-family:monospace;color:var(--accent);min-width:52px}
 </style>
@@ -417,7 +444,6 @@ function edLive() {
   const au = sp.audio || {};
   v.volume = Math.max(0, Math.min(1, Math.pow(10, (+au.volume_db || 0) / 20)));
 
-  edCaptionLive();
 }
 
 // Caption overlay: an HTML approximation of the burn-in, so size/colour/height
@@ -550,7 +576,7 @@ function edTick() {
     document.getElementById("ed-time").textContent =
       `${fmt(v.currentTime)} / ${fmt(ED.dur)}` + (EDCUT !== null ? "  · cutting…" : "");
   }
-  if (v && ED) { edSeekGuard(); edCaptionLive(); }
+  if (v && ED) { edSeekGuard(); }
   if (ED) requestAnimationFrame(edTick);
 }
 
@@ -609,6 +635,10 @@ function edMove(mode, t) {
   edPaintTimeline();
 }
 
+// Update a slider's readout WITHOUT re-rendering the panel. Re-rendering
+// replaced the <input> being dragged, so the drag died after one tick.
+function lb(id, text) { const e = document.getElementById(id); if (e) e.textContent = text; }
+
 function edTab(which) {
   if (!ED) return;
   document.querySelectorAll(".ed-tab").forEach(b => b.classList.toggle("on", b.dataset.t === which));
@@ -617,15 +647,15 @@ function edTab(which) {
   if (which === "captions") {
     const cap = sp.captions;
     P.innerHTML = `
-      <label>Size <b>${cap.size}</b>
+      <label>Size <b id="lb-size">${cap.size}</b>
         <input type="range" min="10" max="46" value="${cap.size}"
-          onchange="edSnap()" oninput="ED.spec.captions.size=+this.value;edTab('captions');edLive()"></label>
-      <label>Height off the bottom <b>${cap.margin}</b>
+          onpointerdown="edSnap()" oninput="ED.spec.captions.size=+this.value;lb('lb-size',this.value);edLive()"></label>
+      <label>Height off the bottom <b id="lb-marg">${cap.margin}</b>
         <input type="range" min="10" max="180" value="${Math.min(cap.margin, 180)}"
-          onchange="edSnap()" oninput="ED.spec.captions.margin=+this.value;edTab('captions');edLive()"></label>
-      <label>Outline <b>${cap.outline}</b>
+          onpointerdown="edSnap()" oninput="ED.spec.captions.margin=+this.value;lb('lb-marg',this.value);edLive()"></label>
+      <label>Outline <b id="lb-out">${cap.outline}</b>
         <input type="range" min="0" max="10" value="${cap.outline}"
-          onchange="edSnap()" oninput="ED.spec.captions.outline=+this.value;edTab('captions');edLive()"></label>
+          onpointerdown="edSnap()" oninput="ED.spec.captions.outline=+this.value;lb('lb-out',this.value);edLive()"></label>
       <label>Text colour</label>
       <div class="row" style="gap:6px;flex-wrap:wrap">${
         ["#FFFFFF", "#F5A524", "#3FB950", "#F85149", "#00E5FF", "#FFD479"].map(h =>
@@ -645,12 +675,12 @@ function edTab(which) {
         ${Object.entries(ED.audio_presets).map(([k, l]) =>
           `<option value="${k}"${k === a.preset ? " selected" : ""}>${esc(l)}</option>`).join("")}
       </select>
-      <label>Strength <b>${Math.round(a.intensity * 100)}%</b>
+      <label>Strength <b id="lb-aint">${Math.round(a.intensity * 100)}%</b>
         <input type="range" min="0" max="150" value="${Math.round(a.intensity * 100)}"
-          oninput="ED.spec.audio.intensity=+this.value/100;edTab('audio')"></label>
-      <label>Volume <b>${a.volume_db > 0 ? "+" : ""}${a.volume_db} dB</b>
+          onpointerdown="edSnap()" oninput="ED.spec.audio.intensity=+this.value/100;lb('lb-aint',this.value+'%')"></label>
+      <label>Volume <b id="lb-vol">${a.volume_db > 0 ? "+" : ""}${a.volume_db} dB</b>
         <input type="range" min="-12" max="12" step="1" value="${a.volume_db}"
-          onchange="edSnap()" oninput="ED.spec.audio.volume_db=+this.value;edTab('audio');edLive()"></label>
+          onpointerdown="edSnap()" oninput="ED.spec.audio.volume_db=+this.value;lb('lb-vol',(this.value>0?'+':'')+this.value+' dB');edLive()"></label>
       <button class="ghost" style="margin-top:10px" onclick="edHear()">Hear 12s</button>
       <div id="ed-aprev" style="margin-top:8px"></div>
       <div class="muted" style="margin-top:8px;font-size:12px">Metallic or warbly? That's the
@@ -663,9 +693,10 @@ function edTab(which) {
         ${Object.entries(ED.color_presets).map(([k, l]) =>
           `<option value="${k}"${k === c.preset ? " selected" : ""}>${esc(l)}</option>`).join("")}
       </select>
-      <label>Strength <b>${Math.round(c.intensity * 100)}%</b>
+      <label>Strength <b id="lb-cint">${Math.round(c.intensity * 100)}%</b>
         <input type="range" min="0" max="150" value="${Math.round(c.intensity * 100)}"
-          onchange="edSnap()" oninput="ED.spec.color.intensity=+this.value/100;edTab('color');edPreview();edLive()"></label>
+          onpointerdown="edSnap()" oninput="ED.spec.color.intensity=+this.value/100;lb('lb-cint',this.value+'%');edLive()"
+          onchange="edPreview()"></label>
       <img id="ed-prev" style="width:100%;border-radius:10px;background:#000;margin-top:8px">
       <div class="muted" style="font-size:12px">Preview is from the raw recording, so you're
         seeing this grade on its own — not stacked on the one already applied.</div>`;
@@ -678,12 +709,12 @@ function edTab(which) {
         `<button class="${r === a.ratio ? "" : "ghost"}" style="flex:1;min-width:62px;padding:9px 0;font-size:13px"
            onclick="edSetRatio('${r}')">${r}</button>`).join("")}</div>
       ${a.ratio === "original" ? `<div class="muted" style="margin-top:10px">Frame left as shot.</div>` : `
-        <label style="margin-top:10px">Move up / down <b>${Math.round(a.pan * 100)}%</b>
+        <label style="margin-top:10px">Move up / down <b id="lb-pan">${Math.round(a.pan * 100)}%</b>
           <input type="range" min="0" max="100" value="${Math.round(a.pan * 100)}"
-            onchange="edSnap()" oninput="ED.spec.aspect.pan=+this.value/100;edTab('aspect');edLive()"></label>
-        <label>Zoom <b>${a.zoom.toFixed(2)}×</b>
+            onpointerdown="edSnap()" oninput="ED.spec.aspect.pan=+this.value/100;lb('lb-pan',this.value+'%');edLive()"></label>
+        <label>Zoom <b id="lb-zoom">${a.zoom.toFixed(2)}×</b>
           <input type="range" min="100" max="220" value="${Math.round(a.zoom * 100)}"
-            onchange="edSnap()" oninput="ED.spec.aspect.zoom=+this.value/100;edTab('aspect');edLive()"></label>
+            onpointerdown="edSnap()" oninput="ED.spec.aspect.zoom=+this.value/100;lb('lb-zoom',(this.value/100).toFixed(2)+'×');edLive()"></label>
         ${a.ratio !== "9:16" && a.pan < 0.55
           ? `<div class="muted" style="color:var(--warn);margin-top:6px">Captions may get cut — drag down a little.</div>` : ""}`}`;
   }
@@ -773,6 +804,85 @@ async function edApply() {
   } finally { btn.disabled = false; btn.textContent = "Apply edits"; }
 }
 
+// ------------------------------------------------------- month calendar
+// A real month grid rather than a list of days, so "what am I posting and when"
+// is one glance. Days with posts are filled; empty days are just empty — no
+// colour, no badge, no nudge. That restraint is deliberate (see schedule.py).
+let CALMONTH = null;   // Date pinned to the 1st of the shown month
+
+function calShift(n) {
+  const d = CALMONTH || new Date();
+  CALMONTH = new Date(d.getFullYear(), d.getMonth() + n, 1);
+  paintMonth();
+}
+
+function paintMonth() {
+  const host = document.getElementById("month");
+  if (!host || !SCHED) return;
+  if (!CALMONTH) CALMONTH = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+
+  const y = CALMONTH.getFullYear(), m = CALMONTH.getMonth();
+  const first = new Date(y, m, 1);
+  const daysIn = new Date(y, m + 1, 0).getDate();
+  // Monday-first, matching the day toggles in the cadence settings.
+  const lead = (first.getDay() + 6) % 7;
+
+  // slot -> posts, keyed by YYYY-MM-DD
+  const byDay = {};
+  for (const slot of (SCHED.calendar || [])) {
+    if (!slot.clip) continue;
+    (byDay[slot.day] = byDay[slot.day] || []).push(slot);
+  }
+
+  const todayKey = new Date().toISOString().slice(0, 10);
+  let cells = "";
+  for (let i = 0; i < lead; i++) cells += `<div class="cal-cell cal-out"></div>`;
+  for (let d = 1; d <= daysIn; d++) {
+    const key = `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    const items = byDay[key] || [];
+    const isToday = key === todayKey;
+    cells += `<div class="cal-cell${items.length ? " cal-has" : ""}${isToday ? " cal-today" : ""}"
+                   onclick="calDay('${key}')">
+      <div class="cal-num">${d}</div>
+      ${items.slice(0, 3).map(s => `<div class="cal-chip" title="${esc(s.clip.hook || "")}">
+          <b>${s.time}</b> ${esc((s.clip.hook || "").slice(0, 22))}</div>`).join("")}
+      ${items.length > 3 ? `<div class="cal-more">+${items.length - 3} more</div>` : ""}
+    </div>`;
+  }
+
+  host.innerHTML = `
+    <div class="cal-head">
+      <button class="ed-icon" onclick="calShift(-1)">‹</button>
+      <b style="flex:1;text-align:center">${first.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</b>
+      <button class="ed-icon" onclick="calShift(1)">›</button>
+    </div>
+    <div class="cal-grid cal-dow">${["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
+      .map(n => `<div class="cal-dowc">${n}</div>`).join("")}</div>
+    <div class="cal-grid">${cells}</div>`;
+}
+
+function calDay(key) {
+  const items = (SCHED.calendar || []).filter(s => s.day === key && s.clip);
+  const host = document.getElementById("cal");
+  if (!items.length) {
+    host.innerHTML = `<div class="card"><p class="muted">Nothing scheduled on
+      ${new Date(key + "T00:00").toLocaleDateString(undefined,{weekday:"long",month:"long",day:"numeric"})}.
+      An empty day is a normal outcome, not a gap to fill.</p></div>`;
+    return;
+  }
+  host.innerHTML = `<div class="card" style="padding:12px">
+    <b>${new Date(key + "T00:00").toLocaleDateString(undefined,{weekday:"long",month:"short",day:"numeric"})}</b>
+    ${items.map(s => `<div class="cal-slot">
+        <span class="cal-time">${s.time}</span>
+        <span style="flex:1">${esc((s.clip.hook || "").slice(0, 66))}
+          <div class="muted" style="font-size:12px">${esc(s.clip.source_name || "")}</div></span>
+        <button class="ghost" style="width:auto;padding:4px 9px;font-size:12px"
+          onclick="unschedule('${s.clip.job_id}','${s.clip.clip_id}')">remove</button>
+        <button class="ghost" style="width:auto;padding:4px 9px;font-size:12px"
+          onclick="markPosted('${s.clip.job_id}','${s.clip.clip_id}')">posted</button>
+      </div>`).join("")}</div>`;
+}
+
 // ------------------------------------------------------------------ calendar
 function showTab(which) {
   const deck = which === "deck";
@@ -818,6 +928,7 @@ async function loadCal() {
   // Group slots by day. Empty slots render plainly — no colour, no count, no nudge.
   const byDay = {};
   for (const slot of SCHED.calendar) (byDay[slot.day] = byDay[slot.day] || []).push(slot);
+  paintMonth();
   document.getElementById("cal").innerHTML = Object.keys(byDay).map(day => {
     const nice = new Date(day + "T00:00").toLocaleDateString(undefined,
       { weekday: "long", month: "short", day: "numeric" });
@@ -882,6 +993,7 @@ async function schedStatus() {
 }
 schedStatus();
 loadDeck();
+if (window.matchMedia("(min-width:1180px)").matches) { loadCal(); }
 }
 
 async function saveSched(patch) {
@@ -925,5 +1037,6 @@ async function schedStatus() {
 }
 schedStatus();
 loadDeck();
+if (window.matchMedia("(min-width:1180px)").matches) { loadCal(); }
 </script>
 {% endblock %}
