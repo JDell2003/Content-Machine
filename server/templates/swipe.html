@@ -211,13 +211,11 @@ function render() {
     <div class="sw-stamp sw-no" id="stamp-no">NOPE</div>
     <div id="frame-live" style="position:relative;overflow:hidden;background:#000">
       <video id="vid" controls autoplay muted playsinline
-             onloadeddata="document.getElementById('vidwait').style.display='none'"
-             src="/api/clips/${c.job_id}/${encodeURIComponent(c.id)}/proxy"></video>
-      <div id="vidwait" class="muted" style="position:absolute;inset:0;display:flex;
-           align-items:center;justify-content:center;text-align:center;padding:20px;
-           background:rgba(0,0,0,.72);font-size:14px">
-        Building an edit copy of this clip…<br><span style="font-size:12px">once only,
-        about 25s — it strips the burned-in captions so your edits show live</span></div>
+             src="/media/${c.job_id}/${encodeURIComponent(c.id)}?variant=wide"></video>
+      ${c.captions_burned ? `<div class="muted" style="position:absolute;left:0;right:0;top:0;
+           padding:6px;background:rgba(210,153,34,.9);color:#20160a;font-size:11px;
+           text-align:center">rendered with captions baked in — the overlay will double up
+           until this clip is re-rendered</div>` : ""}
     </div>
     <div class="sw-meta">
       <b>${esc(c.hook || "Clip")}</b>
@@ -289,11 +287,15 @@ async function decide(verdict, alreadyFlew) {
     if (!pick) { if (alreadyFlew) render(); return; }
     await send(c, { verdict, reason: pick.reason, note: pick.note });
   } else {
-    // Unsaved edits are burned in BEFORE the approval, so what you approved is
-    // what gets posted. Skipped entirely when nothing was touched.
-    if (edDirty() && ED && ED.clip_id === c.id) {
+    // Clips render WITHOUT captions now, so approving is what burns them in —
+    // along with any edits. Runs when you changed something, or when this clip
+    // has never had its captions baked. An already-burned, untouched clip is
+    // left alone rather than re-encoded for nothing.
+    const needsBurn = ED && ED.clip_id === c.id &&
+                      (edDirty() || !c.captions_burned);
+    if (needsBurn) {
       const st = document.getElementById("ed-status");
-      if (st) st.textContent = "saving your edits before approving…";
+      if (st) st.textContent = "burning captions and your edits in…";
       await edApply();
     }
     if (!alreadyFlew) { const el = document.querySelector(".sw-card"); if (el) fly(el, true); }
@@ -592,7 +594,6 @@ async function edOpen() {
   document.getElementById("editor").style.display = "";
   document.getElementById("edtoggle").textContent = "Hide editor";
   edWireTimeline(); edPaintTimeline(); edTab("captions"); edScript(); edLive();
-  edPrefetch();
   edAudioWire(); edTick();
 }
 
@@ -611,20 +612,6 @@ function edDirty() {
   if (!ED) return false;
   return JSON.stringify(ED.spec) !== ED.clean ||
          JSON.stringify(ED.cues || []) !== ED.cuesClean;
-}
-
-// A proxy takes ~26s to build the first time, which would stall every swipe.
-// Warm the next few in the background so the wait lands on the machine, not on
-// you. Fire and forget: a failed prefetch just means the normal build runs.
-const PREFETCHED = new Set();
-function edPrefetch(n = 2) {
-  for (const c of DECK.slice(IDX + 1, IDX + 1 + n)) {
-    const key = `${c.job_id}/${c.id}`;
-    if (PREFETCHED.has(key)) continue;
-    PREFETCHED.add(key);
-    fetch(`/api/clips/${c.job_id}/${encodeURIComponent(c.id)}/proxy`,
-          { method: "GET", cache: "force-cache" }).catch(() => {});
-  }
 }
 
 function edClose() { ED = null; ASRC = null; ANODES = null; AWIRED = null; document.getElementById("editor").style.display = "none"; }

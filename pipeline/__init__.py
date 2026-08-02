@@ -343,13 +343,17 @@ def run_pipeline(*, job: dict, info: dict, report: Callable[..., None], cfg) -> 
             clip["punch_ins"] = len(punches[:3])
 
             # Captions burn into the 16:9 - that's the clip that gets posted.
+            # The .srt is always written — it is the transcript the editor edits.
+            # Whether it gets BURNED here is a setting, off by default.
             srt = render.write_karaoke_srt(words, base.with_suffix(".srt"))
-            clip["captions_burned"] = bool(srt)
+            burn = bool(getattr(cfg, "BURN_CAPTIONS_AT_RENDER", False))
+            clip["captions_burned"] = bool(srt) and burn
             try:
                 wide = render.render_wide(work, base.with_suffix(".mp4"),
                                           w_start, w_end,
                                           punch_ins=punches, keeps=keeps,
-                                          afilter=afilter, subs_path=srt, grade=grade)
+                                          afilter=afilter, subs_path=(srt if burn else None),
+                                          grade=grade)
                 clip["path"] = str(wide)
             except Exception as exc:  # noqa: BLE001 - one bad clip must not sink the job
                 clip["render_error"] = f"{type(exc).__name__}: {exc}"[:300]
@@ -377,11 +381,11 @@ def run_pipeline(*, job: dict, info: dict, report: Callable[..., None], cfg) -> 
                 try:
                     vert = render.render_vertical(
                         work, base.with_name(base.name + "_vertical").with_suffix(".mp4"),
-                        w_start, w_end, subs_path=srt,
+                        w_start, w_end, subs_path=(srt if burn else None),
                         punch_ins=punches, keeps=keeps, afilter=afilter)
                     if vert:
                         clip["path_vertical"] = str(vert)
-                        clip["captions_burned"] = bool(srt)
+                        clip["captions_burned"] = bool(srt) and burn
                     else:
                         clip["vertical_note"] = "no faces detected; 9:16 skipped"
                 # Broad on purpose: the 16:9 cut is the deliverable, and a face

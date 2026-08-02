@@ -180,6 +180,8 @@ def apply(job: dict, clip: dict, spec: dict, *, source: Optional[Path] = None) -
         tmp.replace(out)
         clip["duration_s"] = round(kept, 2)
         clip["edited"] = True
+        # Captions are burned HERE now, not during the batch render.
+        clip["captions_burned"] = bool(srt.exists())
         clip["edit_spec"] = spec
         clip["grade"] = color.describe(c_spec.get("preset", "office"),
                                        float(c_spec.get("intensity", 1.0)))

@@ -72,6 +72,11 @@ CLIP_MIN_S = _i("CM_CLIP_MIN_S", 30)
 CLIP_MAX_S = _i("CM_CLIP_MAX_S", 80)
 MAKE_VERTICAL = _b("CM_MAKE_VERTICAL", True)
 CUT_SILENCE = _b("CM_CUT_SILENCE", False)
+# Captions are NOT burned at render time by default. The transcript is written
+# beside the clip either way, so the editor can overlay it live and burn the
+# final wording/size/colour in when you approve. Burning during the batch means
+# every restyle needs a re-render, and it bakes text into clips you may reject.
+BURN_CAPTIONS_AT_RENDER = _b("CM_BURN_CAPTIONS_AT_RENDER", False)
 
 # Look and sound. Presets are per environment because the fix differs — a warm
 # flat office and a green-lit gym need opposite corrections. Both scale with an
