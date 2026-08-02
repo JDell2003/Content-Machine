@@ -610,6 +610,57 @@ async def clip_sharelink(job_id: str, clip_id: str, body: dict = Body(default={}
             "size_mb": round(path.stat().st_size / 1e6, 1)}
 
 
+@app.get("/api/clips/{job_id}/{clip_id}/proxy")
+async def clip_proxy(job_id: str, clip_id: str):
+    """A small, caption-free, ungraded copy of the clip, for editing against.
+
+    This is what makes live editing honest. The delivered clip has captions
+    burned into its PIXELS, so an HTML overlay can only sit on top of them —
+    which is the double-stacking that made the editor unusable. Cut a clean
+    proxy from the source instead and the overlay IS the only caption, the CSS
+    filter IS the only grade, and what you drag is what you see.
+
+    480p, no grade, no subtitles, plain audio. Cached next to the clip, built
+    once. Never delivered anywhere — it exists purely to be edited against.
+    """
+    job = jobs.load(job_id)
+    if not job:
+        raise HTTPException(404, "no such job")
+    clip = _find_clip(job, clip_id)
+    if not clip.get("path"):
+        raise HTTPException(400, "clip was never rendered")
+
+    out = Path(clip["path"])
+    proxy = out.with_name(out.stem + "_proxy.mp4")
+    if not proxy.exists():
+        raw = job.get("source_path") or job.get("path")
+        src = Path(raw) if raw and Path(raw).exists() else None
+        if src is None:
+            # Source swept. The finished clip is all we have, so the proxy will
+            # carry its burned-in captions — say so rather than pretend.
+            src, start, dur = out, 0.0, float(clip.get("duration_s") or 0)
+        else:
+            start = float(clip.get("start_s") or 0)
+            dur = float(clip.get("duration_s") or 0)
+        args = [shutil.which("ffmpeg") or "ffmpeg", "-y", "-hide_banner",
+                "-loglevel", "error", "-ss", f"{start:.3f}", "-i", str(src),
+                "-t", f"{dur:.3f}",
+                "-vf", "scale=480:480:force_original_aspect_ratio=decrease"
+                       ":force_divisible_by=2",
+                "-c:v", "h264_nvenc", "-preset", "p1", "-cq", "30",
+                "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                "-c:a", "aac", "-b:a", "96k", "-ac", "2", str(proxy)]
+        r = subprocess.run(args, capture_output=True, text=True, timeout=1200)
+        if r.returncode != 0:
+            args[args.index("h264_nvenc")] = "libx264"
+            args[args.index("p1")] = "veryfast"
+            r = subprocess.run(args, capture_output=True, text=True, timeout=1800)
+        if r.returncode != 0 or not proxy.exists():
+            raise HTTPException(500, f"proxy failed: {(r.stderr or '')[-200:]}")
+    return FileResponse(proxy, media_type="video/mp4",
+                        headers={"Cache-Control": "no-store"})
+
+
 # ---------------------------------------------------------- public share link
 @app.get("/share/{token}")
 async def share(token: str, request: Request):
