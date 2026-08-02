@@ -51,8 +51,9 @@
       <button class="ed-tab" data-t="aspect" onclick="edTab('aspect')">Ratio</button>
     </div>
     <div class="muted" style="font-size:12px;margin-top:6px">On the video: drag the
-      caption to move it, drag either orange edge to change how wide it wraps,
-      double-click it to retype the words.</div>
+      <b>caption</b> to move it, drag either orange edge to change how wide it wraps,
+      double-click it to retype. With a ratio chosen, drag the <b>picture itself</b>
+      to reframe what the crop keeps.</div>
     <div class="ed-panel" id="ed-panel"></div>
 
     <div class="row" style="gap:8px;margin-top:10px">
@@ -104,7 +105,8 @@
               max-width:100%}
   /* With a ratio chosen the box drives the shape: fixed height, width derived
      from the ratio, and the video switches to cover so the crop is real. */
-  #frame-live.ratio video{object-fit:cover;max-height:none}
+  #frame-live.ratio video{object-fit:cover;max-height:none;cursor:grab}
+  #frame-live.ratio video:active{cursor:grabbing}
   .sw-meta{padding:12px}
   .sw-stamp{position:absolute;top:18px;font-size:26px;font-weight:900;padding:6px 14px;
             border-radius:10px;border:4px solid;opacity:0;pointer-events:none;transform:rotate(-12deg)}
@@ -534,6 +536,56 @@ function edLive() {
 
 }
 
+// --------------------------------------------- drag the video to reframe
+// Only does anything when a ratio is chosen — with no crop there is nothing to
+// pan, and silently moving an uncropped frame would be a lie.
+//
+// Dragging sets object-position, which is exactly what reframe.plan() turns
+// into a crop box at render time, so the framing you drag is the framing that
+// gets encoded.
+let VIDDRAG = null;
+
+function edVideoDragWire(v) {
+  if (!v || v.dataset.panwired) return;
+  v.dataset.panwired = "1";
+
+  v.addEventListener("pointerdown", (e) => {
+    if (!ED) return;
+    const a = ED.spec.aspect || {};
+    if (!a.ratio || a.ratio === "original") return;   // nothing to pan
+    // Leave the bottom strip alone so the native controls still work.
+    const r = v.getBoundingClientRect();
+    if (e.clientY > r.bottom - 44) return;
+    VIDDRAG = { x0: e.clientX, y0: e.clientY, w: r.width, h: r.height,
+                pan: a.pan ?? 0.5, panx: a.panx ?? 0.5 };
+    v.setPointerCapture(e.pointerId);
+    edSnap();
+    e.preventDefault();
+  });
+
+  v.addEventListener("pointermove", (e) => {
+    if (!VIDDRAG || !ED) return;
+    // Inverted: dragging the picture down should reveal what is ABOVE it, the
+    // way moving a photo under a mask behaves.
+    const dx = (e.clientX - VIDDRAG.x0) / VIDDRAG.w;
+    const dy = (e.clientY - VIDDRAG.y0) / VIDDRAG.h;
+    const a = ED.spec.aspect;
+    a.panx = Math.max(0, Math.min(1, VIDDRAG.panx - dx));
+    a.pan = Math.max(0, Math.min(1, VIDDRAG.pan - dy));
+    edLive();
+    e.preventDefault();
+  });
+
+  const stop = () => {
+    if (!VIDDRAG) return;
+    VIDDRAG = null;
+    // Refresh the panel so the sliders show where you dragged it to.
+    if (document.querySelector('.ed-tab.on')?.dataset.t === "aspect") edTab("aspect");
+  };
+  v.addEventListener("pointerup", stop);
+  v.addEventListener("pointercancel", stop);
+}
+
 // ------------------------------------------- direct caption manipulation
 // Drag the caption to move it, drag either edge to set how wide the text box is
 // (which is what decides whether a line wraps), double-click to edit the words.
@@ -713,6 +765,7 @@ async function edOpen() {
   document.getElementById("editor").style.display = "";
   document.getElementById("edtoggle").textContent = "Hide editor";
   edWireTimeline(); edPaintTimeline(); edTab("captions"); edScript(); edLive();
+  edVideoDragWire(edVid());
   edAudioWire(); edTick();
 }
 
