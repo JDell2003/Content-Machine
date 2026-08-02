@@ -157,6 +157,10 @@ def apply(job: dict, clip: dict, spec: dict, *, source: Optional[Path] = None) -
                                     float(c_spec.get("intensity", 1.0)))
     crop, delivery = crop_filter(spec, work)
 
+    from server import config as _cfg  # noqa: PLC0415
+    will_append = bool(clip.get("outro"))
+    fade_out = float(getattr(_cfg, "OUTRO_FADE_OUT", 0.5)) if will_append else 0.0
+
     tmp = out.with_name(out.stem + "_edit.mp4")
     try:
         render.render_wide(
@@ -164,16 +168,19 @@ def apply(job: dict, clip: dict, spec: dict, *, source: Optional[Path] = None) -
             keeps=keeps_abs if len(keeps) > 1 or kept < duration - 0.05 else None,
             afilter=afilter, subs_path=srt if srt.exists() else None,
             grade=grade, style_override=style or None,
-            crop=crop, delivery=delivery)
+            crop=crop, delivery=delivery,
+            fade_out=fade_out, out_duration=kept)
 
         # The outro lives on the end of the old file and was just discarded.
         if clip.get("outro"):
             from . import outro as _o  # noqa: PLC0415
             geo = _o.probe(tmp)
+            from server import config as _cfg  # noqa: PLC0415
             baked = _o.bake(geo["w"], geo["h"], geo["fps"], grade=grade,
                             afilter=afilter,
                             codec_args=render._video_codec_args(),
-                            audio_args=render._audio_args())
+                            audio_args=render._audio_args(),
+                            fade_in=float(getattr(_cfg, "OUTRO_FADE_IN", 0.5)))
             if baked:
                 _o.append(tmp, baked)
 

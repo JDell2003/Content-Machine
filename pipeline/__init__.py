@@ -342,6 +342,11 @@ def run_pipeline(*, job: dict, info: dict, report: Callable[..., None], cfg) -> 
             clip["silence_removed_s"] = round(max(0.0, trimmed), 1)
             clip["punch_ins"] = len(punches[:3])
 
+            # Fade out only when a CTA actually follows. Fading to black at the
+            # end of a standalone clip would just look like it broke.
+            will_append = bool(look.get("outro", True) and outro.info()["present"])
+            fade_out = float(getattr(cfg, "OUTRO_FADE_OUT", 0.5)) if will_append else 0.0
+
             # Captions burn into the 16:9 - that's the clip that gets posted.
             # The .srt is always written — it is the transcript the editor edits.
             # Whether it gets BURNED here is a setting, off by default.
@@ -353,7 +358,8 @@ def run_pipeline(*, job: dict, info: dict, report: Callable[..., None], cfg) -> 
                                           w_start, w_end,
                                           punch_ins=punches, keeps=keeps,
                                           afilter=afilter, subs_path=(srt if burn else None),
-                                          grade=grade)
+                                          grade=grade, fade_out=fade_out,
+                                          out_duration=c["duration_s"] - trimmed)
                 clip["path"] = str(wide)
             except Exception as exc:  # noqa: BLE001 - one bad clip must not sink the job
                 clip["render_error"] = f"{type(exc).__name__}: {exc}"[:300]
@@ -364,13 +370,14 @@ def run_pipeline(*, job: dict, info: dict, report: Callable[..., None], cfg) -> 
             # Spliced on with a stream copy, so the clip keeps exactly the one
             # encode it came out of the renderer with. The outro is baked once
             # per geometry (and per look) and reused by every clip after that.
-            if clip["path"] and look.get("outro", True) and outro.info()["present"]:
+            if clip["path"] and will_append:
                 try:
                     geo = outro.probe(Path(clip["path"]))
                     baked = outro.bake(geo["w"], geo["h"], geo["fps"],
                                        grade=grade, afilter=afilter,
                                        codec_args=render._video_codec_args(),
-                                       audio_args=render._audio_args())
+                                       audio_args=render._audio_args(),
+                                       fade_in=float(getattr(cfg, "OUTRO_FADE_IN", 0.5)))
                     if baked:
                         _, how = outro.append(Path(clip["path"]), baked)
                         clip["outro"] = how

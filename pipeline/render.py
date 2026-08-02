@@ -228,7 +228,8 @@ def render_wide(source: Path, out: Path, start_s: float, end_s: float,
                 keeps: Optional[list[tuple[float, float]]] = None,
                 afilter: str = "", subs_path: Optional[Path] = None,
                 grade: str = "", style_override: Optional[dict] = None,
-                crop: str = "", delivery: str = "") -> Path:
+                crop: str = "", delivery: str = "",
+                fade_out: float = 0.0, out_duration: Optional[float] = None) -> Path:
     """One encode from the original file.
 
     `crop` reframes to a target aspect and `delivery` overrides the output size.
@@ -257,7 +258,18 @@ def render_wide(source: Path, out: Path, start_s: float, end_s: float,
     if subs_path and subs_path.exists():
         vf.append(subtitle_filter(subs_path, vertical=False, style_override=style_override))
 
-    af = ",".join(x for x in (asel, afilter) if x)
+    # Fade to black at the very end, so the hand-off to the CTA outro reads as a
+    # transition rather than a glitch. `out_duration` matters: with cuts applied
+    # the output is SHORTER than end_s - start_s, and fading at the wrong time
+    # would darken the middle of the clip.
+    afade = ""
+    if fade_out > 0.01:
+        total = float(out_duration or dur)
+        st = max(0.0, total - fade_out)
+        vf.append(f"fade=t=out:st={st:.3f}:d={fade_out:.3f}")
+        afade = f"afade=t=out:st={st:.3f}:d={fade_out:.3f}"
+
+    af = ",".join(x for x in (asel, afilter, afade) if x)
     args = [_ffmpeg(), "-y", "-hide_banner", "-loglevel", "error", *_decode_args(source),
             *_seek(source, start_s, dur), "-vf", ",".join(vf)]
     if af:
@@ -533,7 +545,7 @@ def render_vertical(source: Path, out: Path, start_s: float, end_s: float, *,
                  "Alignment=2,MarginV=320")
         vf.append(f"subtitles='{esc}':force_style='{style}'")
 
-    af = ",".join(x for x in (asel, afilter) if x)
+    af = ",".join(x for x in (asel, afilter, afade) if x)
     args = [_ffmpeg(), "-y", "-hide_banner", "-loglevel", "error", *_decode_args(source),
             *_seek(source, start_s, dur), "-vf", ",".join(vf)]
     if af:

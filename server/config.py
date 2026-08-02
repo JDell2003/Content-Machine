@@ -78,6 +78,12 @@ CUT_SILENCE = _b("CM_CUT_SILENCE", False)
 # every restyle needs a re-render, and it bakes text into clips you may reject.
 BURN_CAPTIONS_AT_RENDER = _b("CM_BURN_CAPTIONS_AT_RENDER", False)
 
+# Transition into the CTA outro. Without these the join is a hard cut, which
+# reads as a glitch rather than a deliberate hand-off. Both video and audio
+# fade, so the voice does not slam into the CTA either.
+OUTRO_FADE_OUT = _f("CM_OUTRO_FADE_OUT", 0.5)   # end of the clip
+OUTRO_FADE_IN = _f("CM_OUTRO_FADE_IN", 0.5)     # start of the outro
+
 # Look and sound. Presets are per environment because the fix differs — a warm
 # flat office and a green-lit gym need opposite corrections. Both scale with an
 # intensity dial so a wrong guess is adjustable instead of a ruined clip.

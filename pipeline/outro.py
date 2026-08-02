@@ -116,14 +116,16 @@ def clear_cache() -> None:
 
 
 # ------------------------------------------------------------------ the bake
-def _key(w: int, h: int, fps: float, grade: str, afilter: str) -> str:
-    h_ = hashlib.sha1(f"{grade}|{afilter}".encode()).hexdigest()[:10]
+def _key(w: int, h: int, fps: float, grade: str, afilter: str,
+         fade_in: float = 0.0) -> str:
+    h_ = hashlib.sha1(f"{grade}|{afilter}|{fade_in}".encode()).hexdigest()[:10]
     return f"{w}x{h}_{fps:.3f}_{h_}.mp4"
 
 
 def bake(w: int, h: int, fps: float, *, grade: str = "", afilter: str = "",
          codec_args: Optional[list[str]] = None,
-         audio_args: Optional[list[str]] = None) -> Optional[Path]:
+         audio_args: Optional[list[str]] = None,
+         fade_in: float = 0.0) -> Optional[Path]:
     """Encode the outro to EXACTLY the renderer's output format, once, cached.
 
     Letterboxes rather than crops: the CTA is you talking to camera, and cropping
@@ -132,7 +134,7 @@ def bake(w: int, h: int, fps: float, *, grade: str = "", afilter: str = "",
     if not SOURCE.exists():
         return None
     CACHE.mkdir(parents=True, exist_ok=True)
-    dest = CACHE / _key(w, h, fps, grade, afilter)
+    dest = CACHE / _key(w, h, fps, grade, afilter, fade_in)
     if dest.exists():
         return dest
 
@@ -141,11 +143,19 @@ def bake(w: int, h: int, fps: float, *, grade: str = "", afilter: str = "",
           "setsar=1", f"fps={fps:.3f}"]
     if grade:
         vf.append(grade)
+    # Fade LAST so it acts on the finished picture, not on an intermediate.
+    if fade_in > 0.01:
+        vf.append(f"fade=t=in:st=0:d={fade_in:.3f}")
 
     args = [_ffmpeg(), "-y", "-hide_banner", "-loglevel", "error", "-i", str(SOURCE),
             "-vf", ",".join(vf)]
-    if afilter:
-        args += ["-af", afilter]
+    af = afilter
+    if fade_in > 0.01:
+        # The voice fades with the picture; a hard audio cut is more jarring
+        # than a hard visual one.
+        af = f"{af},afade=t=in:st=0:d={fade_in:.3f}" if af else              f"afade=t=in:st=0:d={fade_in:.3f}"
+    if af:
+        args += ["-af", af]
     args += [*(codec_args or ["-c:v", "libx264", "-preset", "medium", "-crf", "18",
                               "-pix_fmt", "yuv420p", "-profile:v", "high"]),
              "-movflags", "+faststart",
