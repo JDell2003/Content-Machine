@@ -70,7 +70,7 @@ Then edit `tunnel/config.yml` — replace the three `REPLACE_WITH_*` values with
 the tunnel UUID (printed by `create`) and your hostname. Run it:
 
 ```powershell
-cloudflared tunnel --config D:\ContentMachine	unnel\config.yml run
+cloudflared tunnel --config D:\ContentMachine\tunnel\config.yml run
 ```
 
 ---
