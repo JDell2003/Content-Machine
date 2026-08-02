@@ -30,7 +30,9 @@
       <span class="ed-time" id="ed-time">0:00 / 0:00</span>
       <span style="flex:1"></span>
       <button class="ed-icon" title="Cut from here" onclick="edSplit()">⑃</button>
-      <button class="ed-icon" title="Undo all edits" onclick="edReset()">↺</button>
+      <button class="ed-icon" id="ed-undo" title="Undo" onclick="edUndo()" disabled>↶</button>
+      <button class="ed-icon" id="ed-redo" title="Redo" onclick="edRedo()" disabled>↷</button>
+      <button class="ed-icon" title="Reset every edit" onclick="edReset()">↺</button>
     </div>
 
     <!-- Timeline: one video lane, one audio lane. Deliberately not ten tracks —
@@ -197,8 +199,10 @@ function render() {
   el.innerHTML = `
     <div class="sw-stamp sw-yes" id="stamp-yes">KEEP</div>
     <div class="sw-stamp sw-no" id="stamp-no">NOPE</div>
-    <video id="vid" controls autoplay muted playsinline
-           src="/media/${c.job_id}/${encodeURIComponent(c.id)}?variant=wide"></video>
+    <div id="frame-live" style="position:relative;overflow:hidden;background:#000">
+      <video id="vid" controls autoplay muted playsinline
+             src="/media/${c.job_id}/${encodeURIComponent(c.id)}?variant=wide"></video>
+    </div>
     <div class="sw-meta">
       <b>${esc(c.hook || "Clip")}</b>
       <div class="muted" style="margin-top:4px">
@@ -334,6 +338,142 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "ArrowLeft") decide("rejected");
 });
 
+// ---------------------------------------------------------- undo / redo
+// A plain snapshot stack. The spec is small JSON, so storing whole copies is
+// simpler and less bug-prone than diffing, and 50 of them costs nothing.
+let EDHIST = [], EDFUT = [];
+
+function edSnap() {
+  if (!ED) return;
+  EDHIST.push(JSON.stringify({ spec: ED.spec, cues: ED.cues }));
+  if (EDHIST.length > 50) EDHIST.shift();
+  EDFUT = [];              // a new action invalidates the redo branch
+  edButtons();
+}
+
+function edRestore(json) {
+  const st = JSON.parse(json);
+  ED.spec = st.spec;
+  ED.cues = st.cues;
+  edPaintTimeline();
+  edTab(document.querySelector(".ed-tab.on")?.dataset.t || "captions");
+  edLive();
+  edButtons();
+}
+
+function edUndo() {
+  if (!ED || !EDHIST.length) return;
+  EDFUT.push(JSON.stringify({ spec: ED.spec, cues: ED.cues }));
+  edRestore(EDHIST.pop());
+}
+
+function edRedo() {
+  if (!ED || !EDFUT.length) return;
+  EDHIST.push(JSON.stringify({ spec: ED.spec, cues: ED.cues }));
+  edRestore(EDFUT.pop());
+}
+
+function edButtons() {
+  const u = document.getElementById("ed-undo"), r = document.getElementById("ed-redo");
+  if (u) u.disabled = !EDHIST.length;
+  if (r) r.disabled = !EDFUT.length;
+}
+
+// ------------------------------------------------------- live preview
+// Everything you change shows on the video immediately. This is an APPROXIMATION
+// done in CSS — the browser cannot run ffmpeg's LUT — so the colour is close but
+// not exact. "Apply to this clip" is what produces the real frame.
+function edLive() {
+  const v = edVid();
+  if (!v || !ED) return;
+  const sp = ED.spec;
+
+  // colour: map the grade's contrast/saturation onto CSS filters
+  const c = sp.color || {};
+  const k = Math.max(0, Math.min(1.5, +c.intensity || 0));
+  const P = { office: [0.12, 0.24], gym: [0.16, 0.26],
+              outdoor: [0.06, 0.20], neutral: [0.12, 0.22] }[c.preset] || [0, 0];
+  v.style.filter = k > 0.01
+    ? `contrast(${(1 + P[0] * k).toFixed(3)}) saturate(${(1 + P[1] * k).toFixed(3)})`
+    : "none";
+
+  // aspect: crop the frame the way the render will
+  const a = sp.aspect || {};
+  const box = document.getElementById("frame-live");
+  if (box) {
+    if (a.ratio && a.ratio !== "original") {
+      const [w, h] = a.ratio.split(":");
+      box.style.aspectRatio = `${w} / ${h}`;
+      v.style.objectFit = "cover";
+      v.style.objectPosition = `50% ${Math.round((a.pan ?? 0.5) * 100)}%`;
+      v.style.transform = `scale(${a.zoom || 1})`;
+    } else {
+      box.style.aspectRatio = "";
+      v.style.objectFit = ""; v.style.objectPosition = ""; v.style.transform = "";
+    }
+  }
+
+  // volume
+  const au = sp.audio || {};
+  v.volume = Math.max(0, Math.min(1, Math.pow(10, (+au.volume_db || 0) / 20)));
+
+  edCaptionLive();
+}
+
+// Caption overlay: an HTML approximation of the burn-in, so size/colour/height
+// are visible before spending a render on them.
+function edCaptionLive() {
+  const v = edVid(); if (!v || !ED) return;
+  let ov = document.getElementById("cap-live");
+  if (!ov) {
+    ov = document.createElement("div");
+    ov.id = "cap-live";
+    ov.style.cssText = "position:absolute;left:0;right:0;text-align:center;" +
+      "pointer-events:none;font-family:'Arial Black',Arial,sans-serif;" +
+      "font-weight:900;line-height:1.15;padding:0 6%;white-space:pre-wrap";
+    (document.getElementById("frame-live") || v.parentElement).appendChild(ov);
+  }
+  const cap = ED.spec.captions || {};
+  // ASS Fontsize is against a ~288-unit script height, and MarginV is measured
+  // from the bottom in those same units — mirror that so the preview lines up.
+  const H = v.clientHeight || 400;
+  ov.style.fontSize = ((+cap.size || 20) / 288 * H) + "px";
+  ov.style.bottom = ((+cap.margin || 70) / 288 * H) + "px";
+  ov.style.color = cap.color || "#FFFFFF";
+  const o = Math.max(0, +cap.outline || 0) / 288 * H / 2;
+  ov.style.textShadow = o > 0
+    ? [`${o}px ${o}px 0 #000`, `-${o}px ${o}px 0 #000`,
+       `${o}px -${o}px 0 #000`, `-${o}px -${o}px 0 #000`].join(",")
+    : "none";
+  ov.textContent = edCueAt(v.currentTime);
+}
+
+function edSecs(stamp) {
+  const m = /(\d+):(\d+):(\d+)[,.](\d+)/.exec(stamp || "");
+  return m ? (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3]) + (+m[4]) / 1000 : 0;
+}
+
+function edCueAt(t) {
+  for (const q of (ED.cues || [])) {
+    if (t >= edSecs(q.start) && t <= edSecs(q.end)) return q.text || "";
+  }
+  return "";
+}
+
+// Playback honours the trim and the cuts, so scrubbing shows the edit rather
+// than the original.
+function edSeekGuard() {
+  const v = edVid(); if (!v || !ED) return;
+  const sp = ED.spec;
+  const t = v.currentTime;
+  const [t0, t1] = sp.trim || [0, ED.dur];
+  if (t < t0 - 0.05) { v.currentTime = t0; return; }
+  if (t > t1) { v.pause(); v.currentTime = t0; return; }
+  for (const [a, b] of (sp.cuts || [])) {
+    if (t >= a && t < b) { v.currentTime = b + 0.01; return; }
+  }
+}
+
 // ============================================================= clip editor
 // Every change collects into ONE spec and renders in ONE pass. Editing each
 // thing separately would cost an encode per tweak, which is a queue, not an
@@ -362,11 +502,12 @@ async function edOpen() {
   // Snapshot as opened. Approving only spends a render if something ACTUALLY
   // changed — otherwise a green swipe on an untouched clip would re-encode it
   // for nothing.
+  EDHIST = []; EDFUT = []; edButtons();
   ED.clean = JSON.stringify(ED.spec);
   ED.cuesClean = JSON.stringify(ED.cues || []);
   document.getElementById("editor").style.display = "";
   document.getElementById("edtoggle").textContent = "Hide editor";
-  edWireTimeline(); edPaintTimeline(); edTab("captions"); edTick();
+  edWireTimeline(); edPaintTimeline(); edTab("captions"); edLive(); edTick();
 }
 
 function edToggle() {
@@ -409,6 +550,7 @@ function edTick() {
     document.getElementById("ed-time").textContent =
       `${fmt(v.currentTime)} / ${fmt(ED.dur)}` + (EDCUT !== null ? "  · cutting…" : "");
   }
+  if (v && ED) { edSeekGuard(); edCaptionLive(); }
   if (ED) requestAnimationFrame(edTick);
 }
 
@@ -417,6 +559,7 @@ function edPlay() { const v = edVid(); if (v) { v.paused ? v.play() : v.pause();
 // Two taps: first sets the cut start, second closes it. Simpler than dragging a
 // region on a phone, and it reads back the same way.
 function edSplit() {
+  edSnap();
   const v = edVid(); if (!v || !ED) return;
   if (EDCUT === null) { EDCUT = v.currentTime; return; }
   const a = Math.min(EDCUT, v.currentTime), b = Math.max(EDCUT, v.currentTime);
@@ -426,8 +569,10 @@ function edSplit() {
   ED.spec.cuts.sort((x, y) => x[0] - y[0]);
   edPaintTimeline();
 }
-function edUncut(i) { ED.spec.cuts.splice(i, 1); edPaintTimeline(); }
+function edUncut(i) {
+  edSnap(); ED.spec.cuts.splice(i, 1); edPaintTimeline(); }
 function edReset() {
+  edSnap();
   if (!ED) return;
   ED.spec.trim = [0, ED.dur]; ED.spec.cuts = []; EDCUT = null;
   edPaintTimeline();
@@ -450,10 +595,13 @@ function edWireTimeline() {
     edMove(mode, at(e));
   });
   tl.addEventListener("pointermove", (e) => { if (mode && ED) edMove(mode, at(e)); });
-  tl.addEventListener("pointerup", () => { mode = null; });
+  tl.addEventListener("pointerup", () => { mode = null; EDMOVED = false; edLive(); });
   tl.addEventListener("pointercancel", () => { mode = null; });
 }
+let EDMOVED = false;
 function edMove(mode, t) {
+  // One snapshot per drag, not one per pointermove event.
+  if (mode !== "scrub" && !EDMOVED) { EDMOVED = true; edSnap(); }
   const v = edVid();
   if (mode === "l") ED.spec.trim[0] = Math.min(t, ED.spec.trim[1] - 0.3);
   else if (mode === "r") ED.spec.trim[1] = Math.max(t, ED.spec.trim[0] + 0.3);
@@ -471,23 +619,23 @@ function edTab(which) {
     P.innerHTML = `
       <label>Size <b>${cap.size}</b>
         <input type="range" min="10" max="46" value="${cap.size}"
-          oninput="ED.spec.captions.size=+this.value;edTab('captions')"></label>
+          onchange="edSnap()" oninput="ED.spec.captions.size=+this.value;edTab('captions');edLive()"></label>
       <label>Height off the bottom <b>${cap.margin}</b>
         <input type="range" min="10" max="180" value="${Math.min(cap.margin, 180)}"
-          oninput="ED.spec.captions.margin=+this.value;edTab('captions')"></label>
+          onchange="edSnap()" oninput="ED.spec.captions.margin=+this.value;edTab('captions');edLive()"></label>
       <label>Outline <b>${cap.outline}</b>
         <input type="range" min="0" max="10" value="${cap.outline}"
-          oninput="ED.spec.captions.outline=+this.value;edTab('captions')"></label>
+          onchange="edSnap()" oninput="ED.spec.captions.outline=+this.value;edTab('captions');edLive()"></label>
       <label>Text colour</label>
       <div class="row" style="gap:6px;flex-wrap:wrap">${
         ["#FFFFFF", "#F5A524", "#3FB950", "#F85149", "#00E5FF", "#FFD479"].map(h =>
         `<div class="ed-swatch ${cap.color === h ? "on" : ""}" style="background:${h}"
-           onclick="ED.spec.captions.color='${h}';edTab('captions')"></div>`).join("")}</div>
+           onclick="edSnap();ED.spec.captions.color='${h}';edTab('captions');edLive()"></div>`).join("")}</div>
       <label style="margin-top:12px">Wording — empty a line to drop that caption</label>
       <div>${(ED.cues || []).map((q, i) => `
         <div style="display:flex;gap:6px;align-items:center;margin-bottom:5px">
           <span class="muted" style="font-size:11px;min-width:46px">${q.start.slice(3, 8)}</span>
-          <input type="text" value="${esc(q.text)}" oninput="ED.cues[${i}].text=this.value">
+          <input type="text" value="${esc(q.text)}" onchange="edSnap()" oninput="ED.cues[${i}].text=this.value;edLive()">
         </div>`).join("")}</div>`;
   } else if (which === "audio") {
     const a = sp.audio;
@@ -502,7 +650,7 @@ function edTab(which) {
           oninput="ED.spec.audio.intensity=+this.value/100;edTab('audio')"></label>
       <label>Volume <b>${a.volume_db > 0 ? "+" : ""}${a.volume_db} dB</b>
         <input type="range" min="-12" max="12" step="1" value="${a.volume_db}"
-          oninput="ED.spec.audio.volume_db=+this.value;edTab('audio')"></label>
+          onchange="edSnap()" oninput="ED.spec.audio.volume_db=+this.value;edTab('audio');edLive()"></label>
       <button class="ghost" style="margin-top:10px" onclick="edHear()">Hear 12s</button>
       <div id="ed-aprev" style="margin-top:8px"></div>
       <div class="muted" style="margin-top:8px;font-size:12px">Metallic or warbly? That's the
@@ -511,13 +659,13 @@ function edTab(which) {
     const c = sp.color;
     P.innerHTML = `
       <label>Grade</label>
-      <select style="width:100%" onchange="ED.spec.color.preset=this.value;edPreview()">
+      <select style="width:100%" onchange="edSnap();ED.spec.color.preset=this.value;edPreview();edLive()">
         ${Object.entries(ED.color_presets).map(([k, l]) =>
           `<option value="${k}"${k === c.preset ? " selected" : ""}>${esc(l)}</option>`).join("")}
       </select>
       <label>Strength <b>${Math.round(c.intensity * 100)}%</b>
         <input type="range" min="0" max="150" value="${Math.round(c.intensity * 100)}"
-          oninput="ED.spec.color.intensity=+this.value/100;edTab('color');edPreview()"></label>
+          onchange="edSnap()" oninput="ED.spec.color.intensity=+this.value/100;edTab('color');edPreview();edLive()"></label>
       <img id="ed-prev" style="width:100%;border-radius:10px;background:#000;margin-top:8px">
       <div class="muted" style="font-size:12px">Preview is from the raw recording, so you're
         seeing this grade on its own — not stacked on the one already applied.</div>`;
@@ -532,20 +680,22 @@ function edTab(which) {
       ${a.ratio === "original" ? `<div class="muted" style="margin-top:10px">Frame left as shot.</div>` : `
         <label style="margin-top:10px">Move up / down <b>${Math.round(a.pan * 100)}%</b>
           <input type="range" min="0" max="100" value="${Math.round(a.pan * 100)}"
-            oninput="ED.spec.aspect.pan=+this.value/100;edTab('aspect')"></label>
+            onchange="edSnap()" oninput="ED.spec.aspect.pan=+this.value/100;edTab('aspect');edLive()"></label>
         <label>Zoom <b>${a.zoom.toFixed(2)}×</b>
           <input type="range" min="100" max="220" value="${Math.round(a.zoom * 100)}"
-            oninput="ED.spec.aspect.zoom=+this.value/100;edTab('aspect')"></label>
+            onchange="edSnap()" oninput="ED.spec.aspect.zoom=+this.value/100;edTab('aspect');edLive()"></label>
         ${a.ratio !== "9:16" && a.pan < 0.55
           ? `<div class="muted" style="color:var(--warn);margin-top:6px">Captions may get cut — drag down a little.</div>` : ""}`}`;
   }
 }
 
 function edSetRatio(r) {
+  edSnap();
   ED.spec.aspect.ratio = r;
   // Centred crops slice the burned-in captions; 0.62 keeps them in frame.
   if (r !== "original" && ED.spec.aspect.pan === 0.5) ED.spec.aspect.pan = 0.62;
   edTab("aspect");
+  edLive();
 }
 
 let EDPT = null;
@@ -617,7 +767,8 @@ async function edApply() {
     const v = edVid();
     if (v) { v.src = v.src.split("&_=")[0] + "&_=" + Date.now(); }  // bust the cache
     ED.dur = out.duration_s; ED.spec.trim = [0, ED.dur]; ED.spec.cuts = [];
-    ED.clean = JSON.stringify(ED.spec); ED.cuesClean = JSON.stringify(ED.cues || []);
+    EDHIST = []; EDFUT = []; edButtons();
+  ED.clean = JSON.stringify(ED.spec); ED.cuesClean = JSON.stringify(ED.cues || []);
     edPaintTimeline();
   } finally { btn.disabled = false; btn.textContent = "Apply edits"; }
 }
