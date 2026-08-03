@@ -237,6 +237,10 @@ function render() {
     <div class="sw-stamp sw-yes" id="stamp-yes">KEEP</div>
     <div class="sw-stamp sw-no" id="stamp-no">NOPE</div>
     <div id="frame-live" style="position:relative;overflow:hidden;background:#000">
+      ${SOUND_ON ? "" : `<button id="unmute" onclick="edSound(event)" style="position:absolute;
+        left:50%;top:14px;transform:translateX(-50%);width:auto;z-index:7;padding:8px 16px;
+        font-size:13px;border-radius:99px;background:rgba(0,0,0,.72);color:#fff;
+        border:1px solid rgba(255,255,255,.35)">🔇 tap for sound</button>`}
       <video id="vid" controls autoplay muted playsinline
              src="/media/${c.job_id}/${encodeURIComponent(c.id)}?variant=wide"></video>
       ${c.captions_burned ? `<div class="muted" style="position:absolute;left:0;right:0;top:0;
@@ -393,10 +397,29 @@ document.addEventListener("keydown", (e) => {
 // tone, the presence lift, the gate, the level — and the denoise is the one
 // part you still judge from "Hear 12s", which renders through real ffmpeg.
 let ACTX = null, ASRC = null, ANODES = null, AWIRED = null;
+// Browsers refuse to start an AudioContext, and refuse unmuted autoplay, until
+// the user has interacted with the page. So clips start muted and the first
+// gesture turns sound on for the rest of the session.
+let SOUND_ON = false;
+
+function edSound(e) {
+  if (e) { e.stopPropagation(); e.preventDefault(); }
+  SOUND_ON = true;
+  const v = edVid();
+  if (v) { v.muted = false; v.play().catch(() => {}); }
+  if (ACTX && ACTX.state === "suspended") ACTX.resume().catch(() => {});
+  const b = document.getElementById("unmute");
+  if (b) b.remove();
+  edAudioApply();
+}
 
 function edAudioWire() {
   const v = edVid();
-  if (!v || AWIRED === v) return;
+  if (!v) return;
+  // Carry the choice across cards: once you have asked for sound, every clip
+  // after it should have sound.
+  v.muted = !SOUND_ON;
+  if (AWIRED === v) { if (ACTX && ACTX.state === "suspended") ACTX.resume().catch(() => {}); return; }
   try {
     ACTX = ACTX || new (window.AudioContext || window.webkitAudioContext)();
     // A MediaElementSource can only be created ONCE per element; creating a
@@ -415,6 +438,7 @@ function edAudioWire() {
 
     ANODES = { hp, lp, mud, pres, comp, gain };
     AWIRED = v;
+    if (ACTX.state === "suspended") ACTX.resume().catch(() => {});
     edAudioApply();
   } catch (e) {
     ANODES = null;   // fall back to the plain element; never break playback
@@ -440,6 +464,7 @@ function edAudioApply() {
   const vol = Math.pow(10, (+a.volume_db || 0) / 20);
   if (!ANODES) { v.volume = Math.max(0, Math.min(1, vol)); return; }
   v.volume = 1;
+  v.muted = !SOUND_ON;
 
   ANODES.hp.frequency.value = p.hpf;
   ANODES.lp.frequency.value = p.top || 20000;
