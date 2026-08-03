@@ -1096,34 +1096,39 @@ function edTab(which) {
     edLive();
   } else if (which === "audio") {
     const a = sp.audio;
+    const auto = (a.preset || "auto") === "auto";
     P.innerHTML = `
-      <label>Voice preset</label>
-      <select style="width:100%" onchange="edSnap();ED.spec.audio.preset=this.value;edAudioApply()">
-        ${Object.entries(ED.audio_presets).map(([k, l]) =>
-          `<option value="${k}"${k === a.preset ? " selected" : ""}>${esc(l)}</option>`).join("")}
-      </select>
-      <label>Strength <b id="lb-aint">${Math.round(a.intensity * 100)}%</b>
-        <input type="range" min="0" max="150" value="${Math.round(a.intensity * 100)}"
-          onpointerdown="edSnap()" oninput="ED.spec.audio.intensity=+this.value/100;lb('lb-aint',this.value+'%');edAudioApply()"></label>
+      <div class="muted" style="font-size:13px;margin-bottom:8px">
+        ${auto ? `<b style="color:var(--ok)">Auto</b> — the machine measures the
+          recording (noise floor, tone, how even the delivery is) and derives the
+          voice chain from that. It only denoises as much as the noise justifies,
+          and only compresses if the delivery is actually uneven.`
+        : `Manual override: <b>${esc(a.preset)}</b>`}
+      </div>
+      <div class="muted" id="a-decided" style="font-size:12px;margin-bottom:10px">${esc(ED.voice_note || "")}</div>
       <label>Volume <b id="lb-vol">${a.volume_db > 0 ? "+" : ""}${a.volume_db} dB</b>
         <input type="range" min="-12" max="12" step="1" value="${a.volume_db}"
           onpointerdown="edSnap()" oninput="ED.spec.audio.volume_db=+this.value;lb('lb-vol',(this.value>0?'+':'')+this.value+' dB');edAudioApply()"></label>
-      <button class="ghost" style="margin-top:10px" onclick="edHear()">Hear 12s</button>
+      <button class="ghost" style="margin-top:10px" onclick="edHear()">Hear 12s as it will render</button>
       <div id="ed-aprev" style="margin-top:8px"></div>
-      <div class="muted" style="margin-top:8px;font-size:12px">Metallic or warbly? That's the
-        noise remover working too hard — turn Strength <b>down</b>. "Level only" disables it.</div>`;
+      <div style="height:10px"></div>
+      <button class="ghost" style="font-size:12px;padding:8px"
+        onclick="edVoiceManual()">${auto ? "Override it manually" : "Back to auto"}</button>`;
   } else if (which === "color") {
     const c = sp.color;
-    P.innerHTML = `<div class="ed-cols"><div>
-      <label>Grade</label>
-      <select style="width:100%" onchange="edSnap();ED.spec.color.preset=this.value;edLive()">
-        ${Object.entries(ED.color_presets).map(([k, l]) =>
-          `<option value="${k}"${k === c.preset ? " selected" : ""}>${esc(l)}</option>`).join("")}
-      </select>
-      <label>Strength <b id="lb-cint">${Math.round(c.intensity * 100)}%</b>
-        <input type="range" min="0" max="150" value="${Math.round(c.intensity * 100)}"
-          onpointerdown="edSnap()" oninput="ED.spec.color.intensity=+this.value/100;lb('lb-cint',this.value+'%');edLive()"></label>
-      </div></div>`;
+    const auto = (c.preset || "auto") === "auto";
+    P.innerHTML = `
+      <div class="muted" style="font-size:13px;margin-bottom:8px">
+        ${auto ? `<b style="color:var(--ok)">Auto</b> — measures the actual frames
+          (black point, exposure, contrast, and the colour cast in the highlights)
+          and derives the grade. A wall is meant to be neutral, so whatever tint
+          it carries is the room's cast.`
+        : `Manual override: <b>${esc(c.preset)}</b>`}
+      </div>
+      <div class="muted" id="c-decided" style="font-size:12px;margin-bottom:10px">${esc(ED.grade_note || "")}</div>
+      <button class="ghost" style="font-size:12px;padding:8px"
+        onclick="edColorManual()">${auto ? "Override it manually" : "Back to auto"}</button>`;
+    edLive();
   } else {
     const a = sp.aspect;
     P.innerHTML = `
@@ -1144,6 +1149,21 @@ function edTab(which) {
         ${a.ratio !== "9:16" && a.pan < 0.55
           ? `<div class="muted" style="color:var(--warn);margin-top:6px">Captions may get cut — drag down a little.</div>` : ""}`}`;
   }
+}
+
+// Auto is the default. These exist so a deliberate override is possible, not
+// so a choice is demanded up front.
+function edVoiceManual() {
+  const a = ED.spec.audio;
+  edSnap();
+  a.preset = (a.preset || "auto") === "auto" ? "office" : "auto";
+  edTab("audio"); edAudioApply();
+}
+function edColorManual() {
+  const c = ED.spec.color;
+  edSnap();
+  c.preset = (c.preset || "auto") === "auto" ? "office" : "auto";
+  edTab("color"); edLive();
 }
 
 function edSetRatio(r) {

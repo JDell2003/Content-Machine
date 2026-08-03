@@ -143,18 +143,43 @@ def apply(job: dict, clip: dict, spec: dict, *, source: Optional[Path] = None) -
     keeps_abs = [(w_start + a, w_start + b) for a, b in keeps]
     kept = sum(b - a for a, b in keeps)
 
+    # AUTO measures this clip's own segment and derives the chain. That is why
+    # an already-rendered clip can still be fixed: the burn happens here, at
+    # approve time, from the original source — not at batch-render time.
+    from . import autotune as _auto  # noqa: PLC0415
     a_spec = spec.get("audio") or {}
-    afilter, ainfo = audio_fx.build_chain(
-        work, w_start, duration,
-        preset=a_spec.get("preset", "office"),
-        intensity=float(a_spec.get("intensity", 1.0)))
+    ainfo: dict = {}
+    if str(a_spec.get("preset", "auto")).lower() == "auto":
+        try:
+            v = _auto.auto_voice(work, start=w_start, dur=min(30.0, duration))
+            afilter = v.get("filter") or ""
+            ainfo = {"auto": True, "summary": v.get("summary", "")}
+        except Exception:  # noqa: BLE001 - never lose a clip over a voice chain
+            afilter, ainfo = audio_fx.build_chain(work, w_start, duration)
+    else:
+        afilter, ainfo = audio_fx.build_chain(
+            work, w_start, duration,
+            preset=a_spec.get("preset", "office"),
+            intensity=float(a_spec.get("intensity", 1.0)))
     vol = float(a_spec.get("volume_db") or 0)
     if abs(vol) > 0.1:
         afilter = f"{afilter},volume={vol:.1f}dB" if afilter else f"volume={vol:.1f}dB"
 
     c_spec = spec.get("color") or {}
-    grade = color.fast_filter_chain(c_spec.get("preset", "office"),
-                                    float(c_spec.get("intensity", 1.0)))
+    grade_note = ""
+    if str(c_spec.get("preset", "auto")).lower() == "auto":
+        try:
+            g = _auto.auto_grade(work, at=w_start + min(5.0, duration / 3))
+            grade = g.get("filter") or ""
+            b, a2 = g.get("before"), g.get("after")
+            if b and a2:
+                grade_note = (f"cast {b['cast']:+.0f}->{a2['cast']:+.0f}, "
+                              f"black {b['black']:.0f}->{a2['black']:.0f}")
+        except Exception:  # noqa: BLE001
+            grade = color.fast_filter_chain("office", 1.0)
+    else:
+        grade = color.fast_filter_chain(c_spec.get("preset", "office"),
+                                        float(c_spec.get("intensity", 1.0)))
     crop, delivery = crop_filter(spec, work)
 
     from server import config as _cfg  # noqa: PLC0415
@@ -191,9 +216,11 @@ def apply(job: dict, clip: dict, spec: dict, *, source: Optional[Path] = None) -
         # Captions are burned HERE now, not during the batch render.
         clip["captions_burned"] = bool(srt.exists())
         clip["edit_spec"] = spec
-        clip["grade"] = color.describe(c_spec.get("preset", "office"),
-                                       float(c_spec.get("intensity", 1.0)))
-        clip["audio_fx"] = audio_fx.describe(ainfo)
+        clip["grade"] = (f"Auto — {grade_note}" if grade_note
+                         else color.describe(c_spec.get("preset", "office"),
+                                             float(c_spec.get("intensity", 1.0))))
+        clip["audio_fx"] = (f"Auto — {ainfo.get('summary', '')}" if ainfo.get("auto")
+                            else audio_fx.describe(ainfo))
         clip.pop("edit_error", None)
         clip.pop("path_reframed", None)   # any saved crop was of the old pixels
         clip.pop("reframe", None)

@@ -89,7 +89,7 @@ OUTRO_FADE_IN = _f("CM_OUTRO_FADE_IN", 0.5)     # start of the outro
 # intensity dial so a wrong guess is adjustable instead of a ruined clip.
 COLOR_PRESET = _s("CM_COLOR_PRESET", "auto")        # auto|office|gym|outdoor|neutral
 COLOR_INTENSITY = _f("CM_COLOR_INTENSITY", 1.0)     # 0 = off
-AUDIO_PRESET = _s("CM_AUDIO_PRESET", "office")      # office|gym|quiet|raw
+AUDIO_PRESET = _s("CM_AUDIO_PRESET", "auto")        # auto|office|gym|quiet|raw
 AUDIO_INTENSITY = _f("CM_AUDIO_INTENSITY", 1.0)     # 0 = level only
 
 FRAMEWORKS_PATH = ROOT / "FRAMEWORKS.md"

@@ -37,7 +37,10 @@ from typing import Optional
 TARGET = {
     "black": (0.0, 12.0),      # 1st percentile — crushed but not clipped
     "white": (232.0, 250.0),   # 99th percentile — bright but not blown
-    "mean": (98.0, 128.0),     # overall exposure
+    # Widened after looking at the result: a frame measuring 136 was well
+    # exposed and pleasant, and the tighter window kept pulling it darker for
+    # no visible gain. Numbers serve the picture, not the other way round.
+    "mean": (100.0, 140.0),    # overall exposure
     "contrast": (46.0, 66.0),  # luma std dev
     # How neutral the highlights should be. Not 0: a room with SOME warmth reads
     # as inviting, a perfectly neutral one reads as a hospital.
@@ -127,9 +130,14 @@ def derive(m: dict, prev: Optional[dict] = None) -> dict:
     # Colour cast, measured in the highlights. Correct toward WARMTH_KEEP, not 0.
     excess = m["cast"] - WARMTH_KEEP
     if abs(excess) > TARGET["cast"] * 0.5:
-        step = _clamp(excess / 255.0 * 0.9, -0.09, 0.09)
-        p["r"] = _clamp(p["r"] - step, -0.14, 0.14)
-        p["b"] = _clamp(p["b"] + step, -0.14, 0.14)
+        # Per-pass step is small so it converges rather than overshoots, but the
+        # TOTAL has to be wide enough for a genuinely bad room. Measured: a warm
+        # office reads +45, and a +/-0.14 ceiling saturated at +23 — visibly
+        # orange still. Skin is protected by correcting red and blue only and
+        # leaving green alone, so widening this does not turn faces grey.
+        step = _clamp(excess / 255.0 * 1.1, -0.10, 0.10)
+        p["r"] = _clamp(p["r"] - step, -0.26, 0.26)
+        p["b"] = _clamp(p["b"] + step, -0.26, 0.26)
 
     # Saturation last, and gently. Correcting a cast already changes how
     # colourful it looks, so a big saturation move on top double-counts.
@@ -169,7 +177,7 @@ def within_target(m: dict) -> bool:
             and abs(m["cast"] - WARMTH_KEEP) <= TARGET["cast"])
 
 
-def auto_grade(src: Path, at: float = 0.0, passes: int = 4) -> dict:
+def auto_grade(src: Path, at: float = 0.0, passes: int = 5) -> dict:
     """Measure -> correct -> re-measure, until it lands or the passes run out.
 
     -> {filter, before, after, passes_used, converged}. `filter` is "" when the
@@ -202,3 +210,196 @@ def auto_grade(src: Path, at: float = 0.0, passes: int = 4) -> dict:
             "before": before, "after": m, "passes_used": used,
             "converged": within_target(m),
             "note": "" if within_target(m) else "closest it got within the pass limit"}
+
+
+# ============================================================== audio
+# Same principle as the grade: measure, then decide. A voice preset is a guess
+# about a room, and the wrong guess is audible — too much denoise on clean audio
+# is the metallic warble, too little on a noisy room is a hiss under every word.
+#
+# What gets measured, and what each drives:
+#
+#     noise floor + peak  ->  how much denoise is justified
+#     spectral tilt       ->  presence lift (dull) or de-ess (harsh)
+#     low-frequency energy->  where the highpass sits
+#     crest factor        ->  whether compression is warranted AT ALL
+#     integrated loudness ->  the final gain
+#
+# The compressor is the important one. MEASURED on real footage: the fixed chain
+# came out at 44.3 dB separation against 49.9 dB for the untouched audio — it was
+# making things WORSE, because compand pulls quiet passages up and drags the room
+# noise with them. So compression is now applied only when the delivery is
+# genuinely uneven, and never by default.
+
+A_TARGET = {
+    "separation": 52.0,   # dB between peak and noise floor; above this is clean
+    "lufs": -14.0,        # what short-form platforms normalise to
+    "tilt": (0.28, 0.52),  # high-band / low-band energy ratio; outside = dull or harsh
+    "crest": 14.0,        # dB peak-to-RMS; above this the delivery is uneven
+}
+
+
+def _astats(src: Path, af: str = "", start: float = 0.0,
+            dur: float = 30.0) -> Optional[dict]:
+    """One ffmpeg pass for level statistics."""
+    import re  # noqa: PLC0415
+    chain = (af + "," if af else "") + "astats=measure_perchannel=none"
+    p = subprocess.run(
+        [_ffmpeg(), "-hide_banner", "-nostats", "-ss", f"{start:.2f}",
+         "-i", str(src), "-t", f"{dur:.2f}", "-map", "0:a:0",
+         "-af", chain, "-f", "null", "-"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=600)
+    txt = p.stderr or ""
+
+    def grab(label: str) -> Optional[float]:
+        m = re.findall(rf"{label}:\s+(-?[\d.]+)", txt)
+        return float(m[-1]) if m else None
+
+    floor, peak, rms = grab("Noise floor dB"), grab("Peak level dB"), grab("RMS level dB")
+    if floor is None or peak is None:
+        return None
+    return {"floor": floor, "peak": peak, "rms": rms if rms is not None else peak,
+            "separation": peak - floor, "crest": (peak - rms) if rms is not None else 0.0}
+
+
+def _loudness(src: Path, af: str = "", start: float = 0.0,
+              dur: float = 30.0) -> Optional[float]:
+    import re  # noqa: PLC0415
+    chain = (af + "," if af else "") + "ebur128"
+    p = subprocess.run(
+        [_ffmpeg(), "-hide_banner", "-nostats", "-ss", f"{start:.2f}",
+         "-i", str(src), "-t", f"{dur:.2f}", "-map", "0:a:0",
+         "-af", chain, "-f", "null", "-"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=600)
+    vals = re.findall(r"I:\s+(-?[\d.]+) LUFS", p.stderr or "")
+    return float(vals[-1]) if vals else None
+
+
+def _tilt(src: Path, start: float = 0.0, dur: float = 30.0) -> float:
+    """High-band vs low-band energy. Low = dull/muffled, high = thin/harsh."""
+    lo = _astats(src, "lowpass=f=1000", start, dur)
+    hi = _astats(src, "highpass=f=3000", start, dur)
+    if not lo or not hi:
+        return 0.4
+    # RMS is in dB; convert both to linear before taking the ratio.
+    l_lin = 10 ** (lo["rms"] / 20)
+    h_lin = 10 ** (hi["rms"] / 20)
+    return h_lin / max(l_lin + h_lin, 1e-9)
+
+
+def measure_voice(src: Path, start: float = 0.0, dur: float = 30.0) -> Optional[dict]:
+    base = _astats(src, "", start, dur)
+    if not base:
+        return None
+    return {**base, "lufs": _loudness(src, "", start, dur) or -20.0,
+            "tilt": _tilt(src, start, dur)}
+
+
+def derive_voice(m: dict, model_path: Optional[Path] = None) -> dict:
+    """Measurement -> voice chain parameters."""
+    p: dict = {}
+
+    # Denoise only as much as the noise actually justifies. A clean recording
+    # gets none, which is what stops the metallic artifact appearing on audio
+    # that never needed treating.
+    short = A_TARGET["separation"] - m["separation"]
+    p["denoise_wet"] = _clamp(short / 22.0, 0.0, 0.85) if short > 2 else 0.0
+
+    # Highpass: rumble lives under ~90 Hz and never carries speech.
+    p["hpf"] = 85.0
+
+    # Presence follows the measured tilt rather than a fixed +2 dB.
+    t = m["tilt"]
+    if t < A_TARGET["tilt"][0]:
+        p["presence"] = _clamp((A_TARGET["tilt"][0] - t) * 22.0, 0.0, 4.0)
+        p["deess"] = 0.0
+    elif t > A_TARGET["tilt"][1]:
+        p["presence"] = 0.0
+        p["deess"] = _clamp((t - A_TARGET["tilt"][1]) * 2.0, 0.0, 0.6)
+    else:
+        p["presence"], p["deess"] = 1.0, 0.25
+
+    # Boxiness sits around 300 Hz in small rooms; scale it with how much
+    # low-mid energy there is rather than always cutting 3 dB.
+    p["warmth"] = -3.0 if t < 0.45 else -1.5
+
+    # COMPRESSION ONLY IF THE DELIVERY IS UNEVEN. This is the fix for the chain
+    # measuring worse than untouched audio.
+    p["compress"] = m["crest"] > A_TARGET["crest"]
+    p["gain_db"] = 0.0
+    return p
+
+
+def voice_filter(p: dict, model: Optional[Path] = None) -> str:
+    parts = [f"highpass=f={int(p.get('hpf', 85))}", "lowpass=f=14000"]
+    wet = float(p.get("denoise_wet", 0.0))
+    if wet > 0.02 and model and model.exists():
+        esc = str(model).replace("\\", "/").replace(":", r"\:")
+        dry = 1.0 - wet
+        parts.append(
+            f"asplit=2[cd][cw];[cw]arnndn=m='{esc}'[cn];"
+            f"[cd][cn]amix=inputs=2:weights={dry:.3f} {wet:.3f}:normalize=0")
+    if abs(p.get("warmth", 0)) > 0.1:
+        parts.append(f"equalizer=f=300:t=q:w=1.2:g={p['warmth']:.1f}")
+    if p.get("presence", 0) > 0.1:
+        parts.append(f"equalizer=f=3000:t=q:w=1.5:g={p['presence']:.1f}")
+    if p.get("deess", 0) > 0.05:
+        parts.append(f"deesser=i={p['deess']:.2f}")
+    if p.get("compress"):
+        parts.append("compand=attacks=0.02:decays=0.3:"
+                     "points=-70/-80|-45/-40|-20/-14|0/-8")
+    return ",".join(parts)
+
+
+def auto_voice(src: Path, start: float = 0.0, dur: float = 30.0,
+               model: Optional[Path] = None) -> dict:
+    """Measure -> derive -> verify.
+
+    The verify step is the point. If the shaping made the separation WORSE than
+    the untouched audio, the treatment is hurting rather than helping, and it
+    backs off instead of shipping it. That is exactly the failure the fixed
+    chain had: 44.3 dB against 49.9 dB for doing nothing.
+    """
+    from . import audio_fx  # noqa: PLC0415
+    if model is None:
+        model = audio_fx.model_path()
+
+    before = measure_voice(src, start, dur)
+    if not before:
+        return {"filter": "", "before": None, "after": None,
+                "summary": "could not read the audio"}
+
+    p = derive_voice(before)
+    shaped = voice_filter(p, model)
+    after = _astats(src, shaped, start, dur)
+
+    if after and after["separation"] < before["separation"] - 1.0:
+        # Treatment is losing to silence. Drop the compressor first (it is the
+        # usual culprit) and cap the denoise, then re-check.
+        p["compress"] = False
+        p["denoise_wet"] = min(p["denoise_wet"], 0.35)
+        shaped = voice_filter(p, model)
+        after = _astats(src, shaped, start, dur)
+
+    meas = audio_fx.measure_loudness(src, start, dur, shaped)
+    norm = f"loudnorm=I={A_TARGET['lufs']}:TP=-1.5:LRA=11"
+    if meas:
+        try:
+            norm = (f"loudnorm=I={A_TARGET['lufs']}:TP=-1.5:LRA=11"
+                    f":measured_I={float(meas['input_i'])}"
+                    f":measured_TP={float(meas['input_tp'])}"
+                    f":measured_LRA={float(meas['input_lra'])}"
+                    f":measured_thresh={float(meas['input_thresh'])}"
+                    f":offset={float(meas.get('target_offset', 0.0))}:linear=true")
+        except (KeyError, TypeError, ValueError):
+            pass
+
+    bits = [f"denoise {int(p['denoise_wet'] * 100)}%" if p["denoise_wet"] > 0.02
+            else "no denoise needed",
+            "compressed" if p["compress"] else "no compression",
+            f"presence +{p.get('presence', 0):.1f}dB",
+            f"{before['lufs']:.0f} -> {A_TARGET['lufs']:.0f} LUFS"]
+    return {"filter": f"{shaped},{norm}", "params": p,
+            "before": before, "after": after, "summary": ", ".join(bits)}

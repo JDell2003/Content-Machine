@@ -33,7 +33,7 @@ def defaults() -> dict:
     return {
         "color_preset": getattr(cfg, "COLOR_PRESET", "auto"),
         "color_intensity": float(getattr(cfg, "COLOR_INTENSITY", 1.0)),
-        "audio_preset": getattr(cfg, "AUDIO_PRESET", "office"),
+        "audio_preset": getattr(cfg, "AUDIO_PRESET", "auto"),
         "audio_intensity": float(getattr(cfg, "AUDIO_INTENSITY", 1.0)),
         "volume_db": 0.0,
         "aspect_ratio": "original",

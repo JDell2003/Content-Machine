@@ -175,6 +175,20 @@ def run_pipeline(*, job: dict, info: dict, report: Callable[..., None], cfg) -> 
             report(message=f"Auto grade failed ({type(exc).__name__}); using the preset")
             auto_grade_filter = None
 
+    # Voice is derived the same way and for the same reason: one room, one mic,
+    # one answer. Measured once, reused by every clip.
+    auto_voice_filter = None
+    if str(_look.load().get("audio_preset", "")).lower() == "auto":
+        report(stage="candidates", message="Listening to the audio to derive the voice chain")
+        try:
+            v = _auto.auto_voice(src, start=min(60.0, (info.get("duration_s") or 120) / 3))
+            auto_voice_filter = v.get("filter") or ""
+            if v.get("summary"):
+                report(message=f"Voice: {v['summary']}")
+        except Exception as exc:  # noqa: BLE001
+            report(message=f"Auto voice failed ({type(exc).__name__}); using the preset")
+            auto_voice_filter = None
+
     all_clips: list[dict] = []
     per_profile_cost: dict = {}
 
@@ -346,9 +360,14 @@ def run_pipeline(*, job: dict, info: dict, report: Callable[..., None], cfg) -> 
             look = {**_look.load(), **((job or {}).get("look") or {})}
             c_preset = look["color_preset"]
             c_amt = float(look["color_intensity"])
-            afilter, ainfo = audio_fx.build_chain(
-                work, w_start, c["duration_s"],
-                preset=look["audio_preset"], intensity=float(look["audio_intensity"]))
+            if auto_voice_filter is not None:
+                # Derived from the source, so it needs re-measuring against THIS
+                # segment only for loudness; the shaping decisions still hold.
+                afilter, ainfo = auto_voice_filter, {"auto": True}
+            else:
+                afilter, ainfo = audio_fx.build_chain(
+                    work, w_start, c["duration_s"],
+                    preset=look["audio_preset"], intensity=float(look["audio_intensity"]))
             if auto_grade_filter is not None:
                 grade = auto_grade_filter
                 clip["grade"] = "Auto — measured from the footage"
@@ -375,7 +394,8 @@ def run_pipeline(*, job: dict, info: dict, report: Callable[..., None], cfg) -> 
                      if getattr(cfg, "CUT_SILENCE", False) else None)
             trimmed = (c["duration_s"] - sum(b - a for a, b in keeps)) if keeps else 0.0
             punches = c.get("peak_lines") or []
-            clip["audio_fx"] = audio_fx.describe(ainfo)
+            clip["audio_fx"] = ("Auto — measured from the recording"
+                                if ainfo.get("auto") else audio_fx.describe(ainfo))
             clip["silence_removed_s"] = round(max(0.0, trimmed), 1)
             clip["punch_ins"] = len(punches[:3])
 
