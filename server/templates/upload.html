@@ -239,7 +239,15 @@ async function loadStyle() {
          border:2px solid ${CAPS.color === h ? "var(--accent)" : "var(--line)"}"></div>`).join("")}</div>
     <div class="muted" style="font-size:12px;margin-top:6px">Captions are burned in when
       you approve a clip, not during the render — so these can change any time.</div>
+    <div style="height:14px"></div>
+    <div style="font-weight:700;margin-bottom:4px">See it before you commit</div>
+    <div class="muted" style="font-size:12px;margin-bottom:8px">Renders ~15s from a video
+      on disk with exactly these settings — same render path as the real thing, so it is
+      a sample not a mock-up. Takes about 30s. Change the dials and run it again until
+      you like it, then upload for the full run.</div>
+    <div id="s-testsrc"></div>
     <div id="s-saved" class="muted" style="margin-top:8px"></div>`;
+  styleTestSources();
 }
 
 function setRatio(r) {
@@ -270,6 +278,48 @@ async function saveStyle(repaint) {
   if (n) { n.innerHTML = `<span style="color:var(--ok)">Saved.</span>`;
            setTimeout(() => { n.textContent = ""; }, 2000); }
 }
+// Sources already on disk are what a style test runs against — there is no
+// point rendering a sample of footage that is not yours.
+async function styleTestSources() {
+  const host = document.getElementById("s-testsrc");
+  if (!host) return;
+  try {
+    const r = await fetch("/api/files");
+    if (!r.ok) return;
+    const { files } = await r.json();
+    host.innerHTML = files.length
+      ? `<div class="row" style="gap:6px;align-items:center">
+           <select id="s-src" style="flex:1">${files.map(f =>
+             `<option value="${esc(f.name)}">${esc(f.name.slice(0, 40))}</option>`).join("")}</select>
+           <input id="s-at" type="number" value="60" min="0" style="width:88px" title="start second">
+           <button class="ghost" style="width:auto;padding:9px 14px" id="s-run"
+             onclick="runStyleTest()">Test</button>
+         </div>
+         <div id="s-testout" style="margin-top:10px"></div>`
+      : `<div class="muted">No video on disk yet. Upload one first, then come back
+           and test the style before the full run — the upload is reused, not repeated.</div>`;
+  } catch (e) {}
+}
+
+async function runStyleTest() {
+  const btn = document.getElementById("s-run");
+  const out = document.getElementById("s-testout");
+  btn.disabled = true; btn.textContent = "Rendering…";
+  out.innerHTML = `<div class="muted">about 30s…</div>`;
+  try {
+    const r = await fetch("/api/style-test", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: document.getElementById("s-src").value,
+                             start_s: +document.getElementById("s-at").value || 0,
+                             seconds: 15 }) });
+    if (!r.ok) { out.innerHTML = `<div style="color:var(--bad)">${esc((await r.text()).slice(0,200))}</div>`; return; }
+    const d = await r.json();
+    out.innerHTML = `<video controls autoplay playsinline src="${d.url}"></video>
+      <div class="muted" style="font-size:12px;margin-top:6px">
+        ${esc(d.look.ratio)} · ${esc(d.look.grade)}<br>${esc(d.look.voice)}</div>`;
+  } finally { btn.disabled = false; btn.textContent = "Test"; }
+}
+
 loadStyle();
 
 // --- CTA outro -----------------------------------------------------------

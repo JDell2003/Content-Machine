@@ -982,6 +982,87 @@ async def clip_captions_save(job_id: str, clip_id: str, body: dict = Body(...)):
     return {"ok": True, "cues": _cap.read_srt(srt)}
 
 
+# ------------------------------------------------------------- style test
+@app.post("/api/style-test")
+async def style_test(body: dict = Body(default={})):
+    """Render ~15s from a source on disk with the CURRENT defaults applied.
+
+    The point is to see the grade, the voice chain, the ratio and the caption
+    style on YOUR footage before spending 40 minutes rendering 21 clips in a
+    look you turn out not to like. Uses the same render path as the real thing,
+    so it is a sample rather than a mock-up.
+    """
+    from pipeline import (audio_fx, captions as _cap, color as _c,  # noqa: PLC0415
+                          edit as _e, look as _l, render as _r)
+
+    name = str(body.get("name") or "")
+    src = config.UPLOADS / name
+    if not name or not src.exists():
+        raise HTTPException(404, "no such source video on disk")
+
+    start = float(body.get("start_s") or 0)
+    dur = max(5.0, min(30.0, float(body.get("seconds") or 15)))
+    look = _l.load()
+
+    out_dir = config.DATA / "styletest"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    seg = out_dir / "seg.mp4"
+    out = out_dir / "sample.mp4"
+    try:
+        _r.cut_segment(src, seg, start, dur)
+        work, w_start = seg, 1.0
+    except Exception:  # noqa: BLE001
+        work, w_start = src, start
+
+    afilter, ainfo = audio_fx.build_chain(
+        work, w_start, dur, preset=look["audio_preset"],
+        intensity=float(look["audio_intensity"]))
+    vol = float(look.get("volume_db") or 0)
+    if abs(vol) > 0.1:
+        afilter = f"{afilter},volume={vol:.1f}dB" if afilter else f"volume={vol:.1f}dB"
+
+    grade = _c.fast_filter_chain(look["color_preset"], float(look["color_intensity"]))
+    crop, delivery = _e.crop_filter(
+        {"aspect": {"ratio": look.get("aspect_ratio", "original"),
+                    "pan": look.get("aspect_pan", 0.62),
+                    "cx": look.get("aspect_panx", 0.5),
+                    "zoom": look.get("aspect_zoom", 1.0)}}, work)
+
+    # A sample caption so the size, colour and placement are visible. Real runs
+    # burn the actual transcript at approve time; this is just to judge the look.
+    srt = out_dir / "sample.srt"
+    srt.write_text("\n".join([
+        "1", "00:00:00,000 --> 00:00:04,000",
+        "THIS IS HOW YOUR", "CAPTIONS WILL LOOK", "",
+        "2", "00:00:04,000 --> 00:00:30,000",
+        "SAME SIZE, COLOUR", "AND POSITION", "",
+    ]), encoding="utf-8")
+    try:
+        _r.render_wide(work, out, w_start, w_start + dur, afilter=afilter,
+                       subs_path=srt, grade=grade, crop=crop, delivery=delivery)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        raise HTTPException(500, f"style test failed: {str(exc)[:250]}") from exc
+    finally:
+        seg.unlink(missing_ok=True)
+
+    return {"ok": True, "url": "/media/styletest?_=" + str(int(time.time())),
+            "look": {"ratio": look.get("aspect_ratio"),
+                     "grade": _c.describe(look["color_preset"], float(look["color_intensity"])),
+                     "voice": audio_fx.describe(ainfo)},
+            "size_mb": round(out.stat().st_size / 1e6, 1)}
+
+
+@app.get("/media/styletest")
+async def style_test_media():
+    p = config.DATA / "styletest" / "sample.mp4"
+    if not p.exists():
+        raise HTTPException(404, "run a style test first")
+    return FileResponse(p, media_type="video/mp4",
+                        headers={"Cache-Control": "no-store"})
+
+
+# ------------------------------------------------------------- style test end
+
 # --------------------------------------------------------------- CTA outro
 @app.get("/api/outro")
 async def outro_info():
