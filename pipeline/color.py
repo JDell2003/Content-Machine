@@ -93,6 +93,12 @@ def _s_curve(strength: float) -> str:
     hi = 0.75 + s          # three-quarter rises -> brighter highlights
     return f"curves=all='0/0 0.25/{lo:.3f} 0.5/0.5 0.75/{hi:.3f} 1/1'"
 
+# "auto" is not a look, it is a measurement. See pipeline/autotune.py: it reads
+# the actual frames and derives the correction, which is the only thing that can
+# tell a warm office from a green gym without being told.
+AUTO = "auto"
+# What "auto" falls back to if measurement fails. Must be a real key in PRESETS —
+# DEFAULT_PRESET is used as the dict fallback everywhere below.
 DEFAULT_PRESET = "office"
 
 
@@ -368,6 +374,8 @@ def _hald_to_cube(hald: Path, preset: str, k: float) -> Optional[Path]:
 
 
 def describe(preset: str, intensity: float) -> str:
+    if str(preset or "").lower() == AUTO:
+        return "Auto — measured from the footage"
     p = PRESETS.get(str(preset or "").lower())
     if not p or intensity <= 0.001:
         return "no grade"

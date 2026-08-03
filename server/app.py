@@ -885,7 +885,8 @@ async def tune_run(body: dict = Body(default={})):
 async def look_get():
     from pipeline import color as _c, audio_fx as _a, look as _l  # noqa: PLC0415
     return {**_l.load(),
-            "color_presets": {k: v["label"] for k, v in _c.PRESETS.items()},
+            "color_presets": {"auto": "Auto — measured from your footage",
+                              **{k: v["label"] for k, v in _c.PRESETS.items()}},
             "audio_presets": {k: v["label"] for k, v in _a.PRESETS.items()}}
 
 

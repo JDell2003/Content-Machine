@@ -31,7 +31,7 @@ KEYS = {
 def defaults() -> dict:
     from server import config as cfg  # noqa: PLC0415 - avoids an import cycle
     return {
-        "color_preset": getattr(cfg, "COLOR_PRESET", "office"),
+        "color_preset": getattr(cfg, "COLOR_PRESET", "auto"),
         "color_intensity": float(getattr(cfg, "COLOR_INTENSITY", 1.0)),
         "audio_preset": getattr(cfg, "AUDIO_PRESET", "office"),
         "audio_intensity": float(getattr(cfg, "AUDIO_INTENSITY", 1.0)),

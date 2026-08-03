@@ -19,6 +19,7 @@ from . import (audio_fx, audio_gate, brain, color, edit, outro, prompts,
                render, segment, transcribe)
 from . import look as _look
 from . import tune
+from . import autotune as _auto
 
 MAX_RANK_CALLS = 3
 # Clips render in parallel. Measured per clip: ~2s pre-cut + ~6s loudness
@@ -154,6 +155,25 @@ def run_pipeline(*, job: dict, info: dict, report: Callable[..., None], cfg) -> 
     report(stage="candidates", progress=0.50,
            message=f"{len(cands)} candidates ({flagged} with audio warnings)",
            candidate_count=len(cands))
+
+    # Auto grade is measured ONCE for the whole recording, not per clip: it is
+    # the same room and the same camera throughout, and re-deriving it 21 times
+    # would cost 21 measurement passes for an identical answer.
+    auto_grade_filter = None
+    if str(_look.load().get("color_preset", "")).lower() == "auto":
+        report(stage="candidates", message="Measuring the footage to derive the grade")
+        try:
+            res = _auto.auto_grade(src, at=min(60.0, (info.get("duration_s") or 120) / 3))
+            auto_grade_filter = res.get("filter") or ""
+            b, a = res.get("before"), res.get("after")
+            if b and a:
+                report(message=("Grade derived: cast "
+                                f"{b['cast']:+.0f} -> {a['cast']:+.0f}, "
+                                f"black {b['black']:.0f} -> {a['black']:.0f}, "
+                                f"contrast {b['contrast']:.0f} -> {a['contrast']:.0f}"))
+        except Exception as exc:  # noqa: BLE001 - never fail a job over a grade
+            report(message=f"Auto grade failed ({type(exc).__name__}); using the preset")
+            auto_grade_filter = None
 
     all_clips: list[dict] = []
     per_profile_cost: dict = {}
@@ -329,8 +349,12 @@ def run_pipeline(*, job: dict, info: dict, report: Callable[..., None], cfg) -> 
             afilter, ainfo = audio_fx.build_chain(
                 work, w_start, c["duration_s"],
                 preset=look["audio_preset"], intensity=float(look["audio_intensity"]))
-            grade = color.fast_filter_chain(c_preset, c_amt)
-            clip["grade"] = color.describe(c_preset, c_amt)
+            if auto_grade_filter is not None:
+                grade = auto_grade_filter
+                clip["grade"] = "Auto — measured from the footage"
+            else:
+                grade = color.fast_filter_chain(c_preset, c_amt)
+                clip["grade"] = color.describe(c_preset, c_amt)
 
             # Volume and aspect come from the same saved defaults. Before this,
             # "use this style for all" saved a ratio that the batch render never
