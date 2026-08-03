@@ -407,23 +407,45 @@ function edSound(e) {
   SOUND_ON = true;
   const v = edVid();
   if (v) { v.muted = false; v.play().catch(() => {}); }
-  if (ACTX && ACTX.state === "suspended") ACTX.resume().catch(() => {});
   const b = document.getElementById("unmute");
   if (b) b.remove();
-  edAudioApply();
+  // Build the graph NOW — this call is inside a user gesture, which is the only
+  // moment the browser will let an AudioContext start.
+  edAudioWire();
 }
 
 function edAudioWire() {
   const v = edVid();
   if (!v) return;
-  // Carry the choice across cards: once you have asked for sound, every clip
-  // after it should have sound.
   v.muted = !SOUND_ON;
-  if (AWIRED === v) { if (ACTX && ACTX.state === "suspended") ACTX.resume().catch(() => {}); return; }
+
+  // If you unmute with the video's OWN control, treat that as asking for sound.
+  if (!v.dataset.volwired) {
+    v.dataset.volwired = "1";
+    v.addEventListener("volumechange", () => {
+      if (!v.muted && !SOUND_ON) edSound();
+    });
+  }
+
+  // CRITICAL: do NOT build the graph until sound is actually on.
+  //
+  // createMediaElementSource permanently reroutes an element's audio into the
+  // AudioContext. Do it before the user has interacted and the context is still
+  // SUSPENDED, so the sound goes nowhere — and unmuting cannot rescue it,
+  // because output no longer reaches the speakers. There is no falling back
+  // once the source exists. So until sound is enabled the element is left
+  // completely untouched and plays natively.
+  if (!SOUND_ON) return;
+
+  if (AWIRED === v) {
+    if (ACTX && ACTX.state === "suspended") ACTX.resume().catch(() => {});
+    edAudioApply();
+    return;
+  }
   try {
     ACTX = ACTX || new (window.AudioContext || window.webkitAudioContext)();
-    // A MediaElementSource can only be created ONCE per element; creating a
-    // second one throws and kills audio for the whole page.
+    if (ACTX.state === "suspended") ACTX.resume().catch(() => {});
+    // Only ever once per element; a second call throws.
     ASRC = ACTX.createMediaElementSource(v);
 
     const hp = ACTX.createBiquadFilter();   hp.type = "highpass";
@@ -438,10 +460,11 @@ function edAudioWire() {
 
     ANODES = { hp, lp, mud, pres, comp, gain };
     AWIRED = v;
-    if (ACTX.state === "suspended") ACTX.resume().catch(() => {});
     edAudioApply();
   } catch (e) {
-    ANODES = null;   // fall back to the plain element; never break playback
+    // The source may already exist and be routed; leave it alone rather than
+    // half-wiring it. Voice preview is a bonus, audible playback is not.
+    ANODES = null;
   }
 }
 
