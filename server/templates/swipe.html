@@ -481,7 +481,14 @@ function edAudioApply() {
   if (!v || !ED) return;
   const a = ED.spec.audio || {};
   const k = Math.max(0, Math.min(1.5, +a.intensity ?? 1));
-  const p = APRESETS[a.preset] || APRESETS.office;
+  // When auto is on, mirror the DERIVED numbers instead of a preset, so what you
+  // hear is what the render will do.
+  const d = ((a.preset || "auto") === "auto" && AUTOTUNE
+             && AUTOTUNE.voice && AUTOTUNE.voice.params) || null;
+  const p = d
+    ? { hpf: d.hpf || 85, top: 14000, warmth: d.warmth || 0,
+        presence: d.presence || 0, gate: d.compress ? 0.5 : 0.0 }
+    : (APRESETS[a.preset] || APRESETS.office);
 
   // Volume works with or without the graph.
   const vol = Math.pow(10, (+a.volume_db || 0) / 20);
@@ -559,6 +566,7 @@ async function edApplyPreset(name) {
   edLive();
   edAudioApply();
   edLoadPresets();
+  edLoadAuto();
 }
 
 async function edSaveCta(v) {
@@ -623,6 +631,96 @@ function edButtons() {
   if (r) r.disabled = !EDFUT.length;
 }
 
+// ------------------------------------------- live preview of the AUTO result
+// The editor asks the server what auto would do, gets the NUMBERS back, and
+// reproduces them in the browser. Mirroring the parameters rather than showing a
+// preset is the whole point: a preview that shows one thing while the render
+// applies another is worse than no preview.
+//
+// Colour uses an SVG filter, not CSS filters. CSS can do contrast and saturate
+// but has no per-channel gain, and per-channel gain IS the white-balance
+// correction — the single biggest thing auto does. feComponentTransfer gives it
+// exactly.
+let AUTOTUNE = null;
+
+async function edLoadAuto() {
+  if (!ED) return;
+  const badge = (id, txt) => { const e = document.getElementById(id); if (e) e.textContent = txt; };
+  badge("c-decided", "measuring the footage…");
+  badge("a-decided", "listening to the audio…");
+  try {
+    const r = await fetch(`/api/clips/${ED.job_id}/${encodeURIComponent(ED.clip_id)}/autotune`);
+    if (!r.ok) throw new Error("failed");
+    AUTOTUNE = await r.json();
+  } catch (e) {
+    badge("c-decided", "could not measure this clip");
+    badge("a-decided", "could not measure this clip");
+    return;
+  }
+  const g = AUTOTUNE.grade || {}, v = AUTOTUNE.voice || {};
+  if (g.before && g.after) {
+    ED.grade_note = `cast ${g.before.cast >= 0 ? "+" : ""}${g.before.cast.toFixed(0)} → ` +
+      `${g.after.cast >= 0 ? "+" : ""}${g.after.cast.toFixed(0)}, ` +
+      `black ${g.before.black.toFixed(0)} → ${g.after.black.toFixed(0)}, ` +
+      `contrast ${g.before.contrast.toFixed(0)} → ${g.after.contrast.toFixed(0)}`;
+  }
+  ED.voice_note = v.summary || "";
+  badge("c-decided", ED.grade_note || "");
+  badge("a-decided", ED.voice_note || "");
+  edApplyAutoGrade();
+  edAudioApply();
+}
+
+// Build (once) an SVG filter the video can be piped through.
+function edSvgFilter() {
+  let svg = document.getElementById("auto-svg");
+  if (svg) return svg;
+  svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.id = "auto-svg";
+  svg.setAttribute("width", "0"); svg.setAttribute("height", "0");
+  svg.style.cssText = "position:absolute;width:0;height:0";
+  svg.innerHTML =
+    '<defs><filter id="autograde" color-interpolation-filters="sRGB">' +
+    '<feComponentTransfer id="auto-ct">' +
+    '<feFuncR id="auto-r" type="linear" slope="1" intercept="0"/>' +
+    '<feFuncG id="auto-g" type="linear" slope="1" intercept="0"/>' +
+    '<feFuncB id="auto-b" type="linear" slope="1" intercept="0"/>' +
+    '</feComponentTransfer>' +
+    '<feColorMatrix id="auto-sat" type="saturate" values="1"/>' +
+    '</filter></defs>';
+  document.body.appendChild(svg);
+  return svg;
+}
+
+function edApplyAutoGrade() {
+  const v = edVid();
+  if (!v || !ED) return;
+  const manual = (ED.spec.color || {}).preset && ED.spec.color.preset !== "auto";
+  const p = (AUTOTUNE && AUTOTUNE.grade && AUTOTUNE.grade.params) || null;
+  if (manual || !p) return;   // edLive already handles the preset case
+
+  edSvgFilter();
+  // curves black/white in -> slope and intercept, the same levels remap ffmpeg
+  // does. slope = 1/(white-black), intercept = -black*slope.
+  const bIn = (p.black_in || 0) / 255, wIn = (p.white_in ?? 255) / 255;
+  const slope = 1 / Math.max(0.05, wIn - bIn);
+  const inter = -bIn * slope;
+  // colorbalance rm/bm are roughly per-channel gain around 1.
+  const rG = 1 + (p.r || 0), bG = 1 + (p.b || 0);
+  const gain = (p.contrast || 1) * (p.gamma ? (1 / p.gamma) * 0.5 + 0.5 : 1);
+
+  const set = (id, s, i) => {
+    const e = document.getElementById(id);
+    if (e) { e.setAttribute("slope", s.toFixed(4)); e.setAttribute("intercept", i.toFixed(4)); }
+  };
+  set("auto-r", slope * rG * gain, inter + (p.brightness || 0));
+  set("auto-g", slope * gain, inter + (p.brightness || 0));
+  set("auto-b", slope * bG * gain, inter + (p.brightness || 0));
+  const sat = document.getElementById("auto-sat");
+  if (sat) sat.setAttribute("values", String(p.saturation || 1));
+  v.style.filter = "url(#autograde)";
+}
+
 // ------------------------------------------------------- live preview
 // Everything you change shows on the video immediately. This is an APPROXIMATION
 // done in CSS — the browser cannot run ffmpeg's LUT — so the colour is close but
@@ -634,12 +732,17 @@ function edLive() {
 
   // colour: map the grade's contrast/saturation onto CSS filters
   const c = sp.color || {};
-  const k = Math.max(0, Math.min(1.5, +c.intensity || 0));
-  const P = { office: [0.12, 0.24], gym: [0.16, 0.26],
-              outdoor: [0.06, 0.20], neutral: [0.12, 0.22] }[c.preset] || [0, 0];
-  v.style.filter = k > 0.01
-    ? `contrast(${(1 + P[0] * k).toFixed(3)}) saturate(${(1 + P[1] * k).toFixed(3)})`
-    : "none";
+  if ((c.preset || "auto") === "auto") {
+    // Auto owns the picture: an SVG filter carrying the measured numbers.
+    edApplyAutoGrade();
+  } else {
+    const k = Math.max(0, Math.min(1.5, +c.intensity || 0));
+    const P = { office: [0.12, 0.24], gym: [0.16, 0.26],
+                outdoor: [0.06, 0.20], neutral: [0.12, 0.22] }[c.preset] || [0, 0];
+    v.style.filter = k > 0.01
+      ? `contrast(${(1 + P[0] * k).toFixed(3)}) saturate(${(1 + P[1] * k).toFixed(3)})`
+      : "none";
+  }
 
   // aspect: crop the frame the way the render will
   const a = sp.aspect || {};

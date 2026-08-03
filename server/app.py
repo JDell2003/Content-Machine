@@ -1027,6 +1027,44 @@ async def presets_delete(name: str):
     return {"presets": _p.delete(name)}
 
 
+@app.get("/api/clips/{job_id}/{clip_id}/autotune")
+async def clip_autotune(job_id: str, clip_id: str):
+    """What auto WOULD do to this clip, as numbers the browser can mirror.
+
+    Returns the derived parameters rather than only the ffmpeg string, so the
+    live preview can reproduce the same correction in CSS and WebAudio. Without
+    the numbers the preview would be showing a preset while the render applies
+    something else — the worst kind of preview, one that lies.
+    """
+    from pipeline import autotune as _auto  # noqa: PLC0415
+    job = jobs.load(job_id)
+    if not job:
+        raise HTTPException(404, "no such job")
+    clip = _find_clip(job, clip_id)
+
+    raw = job.get("source_path") or job.get("path")
+    src = Path(raw) if raw and Path(raw).exists() else Path(clip.get("path") or "")
+    at = float(clip.get("start_s") or 0) if src != Path(clip.get("path") or "") else 0.0
+    dur = float(clip.get("duration_s") or 30)
+    if not src.exists():
+        raise HTTPException(404, "nothing to measure")
+
+    out: dict = {}
+    try:
+        g = _auto.auto_grade(src, at=at + min(5.0, dur / 3), passes=4)
+        out["grade"] = {"params": g.get("params"), "filter": g.get("filter"),
+                        "before": g.get("before"), "after": g.get("after")}
+    except Exception as exc:  # noqa: BLE001
+        out["grade"] = {"error": f"{type(exc).__name__}"}
+    try:
+        v = _auto.auto_voice(src, start=at, dur=min(25.0, dur))
+        out["voice"] = {"params": v.get("params"), "summary": v.get("summary"),
+                        "before": v.get("before"), "after": v.get("after")}
+    except Exception as exc:  # noqa: BLE001
+        out["voice"] = {"error": f"{type(exc).__name__}"}
+    return out
+
+
 # ------------------------------------------------------------- style test
 @app.post("/api/style-test")
 async def style_test(body: dict = Body(default={})):
