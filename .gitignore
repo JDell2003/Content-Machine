@@ -51,3 +51,6 @@ EXEMPLARS.md
 MACHINE-VOICE.md
 exemplars/
 *.bak
+
+# ---- downloaded model weights: 212 MB, re-fetched on demand ----
+checkpoints/
