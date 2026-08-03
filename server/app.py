@@ -982,6 +982,43 @@ async def clip_captions_save(job_id: str, clip_id: str, body: dict = Body(...)):
     return {"ok": True, "cues": _cap.read_srt(srt)}
 
 
+# ---------------------------------------------------------------- presets
+@app.get("/api/presets")
+async def presets_list():
+    from pipeline import captions as _cap, look as _l, presets as _p  # noqa: PLC0415
+    return {"presets": _p.load(),
+            "active": _p.current(_l.load(), _cap.load())}
+
+
+@app.post("/api/presets")
+async def presets_save(body: dict = Body(...)):
+    """Save the CURRENT settings under a name, or an explicit look/captions pair."""
+    from pipeline import captions as _cap, look as _l, presets as _p  # noqa: PLC0415
+    try:
+        out = _p.save(str(body.get("name") or ""),
+                      body.get("look") or _l.load(),
+                      body.get("captions") or _cap.load(),
+                      str(body.get("note") or ""))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return {"presets": out, "active": str(body.get("name") or "").strip()}
+
+
+@app.post("/api/presets/apply")
+async def presets_apply(body: dict = Body(...)):
+    from pipeline import presets as _p  # noqa: PLC0415
+    res = _p.apply(str(body.get("name") or ""))
+    if res is None:
+        raise HTTPException(404, "no such preset")
+    return {"ok": True, **res, "active": str(body.get("name"))}
+
+
+@app.delete("/api/presets")
+async def presets_delete(name: str):
+    from pipeline import presets as _p  # noqa: PLC0415
+    return {"presets": _p.delete(name)}
+
+
 # ------------------------------------------------------------- style test
 @app.post("/api/style-test")
 async def style_test(body: dict = Body(default={})):
