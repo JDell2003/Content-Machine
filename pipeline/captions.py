@@ -47,6 +47,15 @@ DEFAULTS = {
     # wrapping: a narrower box breaks a line in two, a wider one keeps it on one.
     "x": 0.5,        # 0 = hard left, 1 = hard right
     "width": 0.88,   # fraction of the frame the text may occupy
+    # Appended to EVERY posted caption. Deterministic on purpose: asking the
+    # caption model to remember a link means it eventually forgets one, and a
+    # clip that goes out without the offer is a wasted post.
+    "cta": "\n".join([
+        "Free 15-minute content framework:",
+        "riseforit.up.railway.app/partner",
+        "",
+        "Want to work together personally? DM me.",
+    ]),
 }
 
 # libass renders SRT against a 384x288 script by default. Margins are in those

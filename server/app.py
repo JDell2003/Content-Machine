@@ -562,7 +562,9 @@ async def clip_edit_get(job_id: str, clip_id: str):
         "spec": clip.get("edit_spec") or {},
         "defaults": {"size": cap["size_wide"], "margin": cap["margin_wide"],
                      "color": cap["color"], "outline_color": cap["outline_color"],
-                     "outline": cap["outline"]},
+                     "outline": cap["outline"],
+                     "x": cap.get("x", 0.5), "width": cap.get("width", 0.88)},
+        "cta": cap.get("cta", ""),
         "color_presets": {k: v["label"] for k, v in _c.PRESETS.items()},
         "audio_presets": {k: v["label"] for k, v in _a.PRESETS.items()},
         "aspects": [a for a in _rf.ASPECTS],
@@ -772,9 +774,14 @@ async def approve_and_schedule(job_id: str, clip_id: str, body: dict = Body(defa
     if bad:
         return {"ok": True, "approved": True, "published": False, "reason": bad}
 
+    # caption -> CTA -> hashtags. The offer sits ABOVE the tags because
+    # Instagram hides long captions behind "more", and a link buried under
+    # eight hashtags is a link nobody taps.
+    from pipeline import captions as _capmod  # noqa: PLC0415
     caption = str(clip.get("caption") or clip.get("hook") or "").strip()
+    cta = str(_capmod.load().get("cta") or "").strip()
     tags = " ".join(str(x) for x in (clip.get("hashtags") or []))
-    text = (caption + ("\n\n" + tags if tags else "")).strip()
+    text = "\n\n".join(x for x in (caption, cta, tags) if x).strip()
 
     token = _sh.mint(path, note=clip_id)
     try:

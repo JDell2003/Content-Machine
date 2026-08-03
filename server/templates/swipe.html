@@ -513,6 +513,12 @@ async function edApplyPreset(name) {
   edLoadPresets();
 }
 
+async function edSaveCta(v) {
+  const r = await fetch("/api/captions/settings", { method: "POST",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cta: v }) });
+  if (r.ok && ED) ED.cta = v;
+}
+
 async function edSavePreset() {
   const el = document.getElementById("ed-pname");
   const name = (el.value || "").trim();
@@ -867,6 +873,7 @@ async function edOpen() {
   if (!r.ok) { alert("Could not open the editor for this clip."); return; }
   const d = await r.json();
   ED = { job_id: c.job_id, clip_id: c.id, dur: +d.clip.duration_s || 1, ...d };
+  ED.cta = d.cta || "";
   ED.spec = JSON.parse(JSON.stringify(d.spec || {}));
   ED.spec.trim = ED.spec.trim || [0, ED.dur];
   ED.spec.cuts = ED.spec.cuts || [];
@@ -1026,6 +1033,17 @@ function edTab(which) {
         ["#FFFFFF", "#F5A524", "#3FB950", "#F85149", "#00E5FF", "#FFD479"].map(h =>
         `<div class="ed-swatch ${cap.color === h ? "on" : ""}" style="background:${h}"
            onclick="edSnap();ED.spec.captions.color='${h}';edTab('captions');edLive()"></div>`).join("")}</div>
+      </div>
+      <div>
+        <label>Offer — appended to EVERY posted caption</label>
+        <textarea id="ed-cta" rows="5" onchange="edSaveCta(this.value)"
+          style="width:100%;font-size:13px;padding:8px;background:var(--panel2);
+          border:1px solid var(--line);border-radius:8px;color:var(--ink);
+          font-family:inherit">${esc(ED.cta || "")}</textarea>
+        <div class="muted" style="font-size:12px;margin-top:4px">Added automatically to
+          every clip you post, above the hashtags — Instagram hides long captions behind
+          "more", so a link under eight tags is a link nobody taps. This is caption text
+          on the post, not burned into the video.</div>
       </div></div>`;
     edLive();
   } else if (which === "audio") {
