@@ -44,6 +44,8 @@
       <div class="ed-head" id="ed-head"></div>
     </div>
 
+    <div id="ed-presets" class="muted" style="margin-top:8px"></div>
+
     <div class="ed-tabs">
       <button class="ed-tab on" data-t="captions" onclick="edTab('captions')">Captions</button>
       <button class="ed-tab" data-t="audio" onclick="edTab('audio')">Audio</button>
@@ -452,6 +454,80 @@ function edAudioApply() {
   ANODES.gain.value = vol * (1 + 0.35 * k);   // rough stand-in for loudnorm
 }
 
+// ------------------------------------------------------------- presets
+// A saved look per environment, applied to the clip in front of you. Lives here
+// rather than on the Upload page because you cannot judge a grade without
+// footage to judge it on.
+//
+// Applying one writes the machine's real settings AND pulls them into the clip
+// being edited, so the preview updates immediately rather than only affecting
+// the next render.
+let PRESETS = null, ACTIVE = null;
+
+async function edLoadPresets() {
+  try {
+    const r = await fetch("/api/presets");
+    if (!r.ok) return;
+    const d = await r.json();
+    PRESETS = d.presets; ACTIVE = d.active;
+  } catch (e) { return; }
+  const host = document.getElementById("ed-presets");
+  if (!host) return;
+  host.innerHTML =
+    `<div style="font-weight:700;font-size:12px;margin-bottom:5px">Presets</div>` +
+    `<div class="row" style="gap:4px;flex-wrap:wrap">` +
+    Object.entries(PRESETS).map(([n, p]) =>
+      `<button class="${n === ACTIVE ? "" : "ghost"}" style="flex:1;min-width:96px;` +
+      `padding:8px 5px;font-size:12px" title="${esc(p.note || "")}"` +
+      ` onclick="edApplyPreset('${esc(n)}')">${esc(n)}${p.builtin ? "" : " &#9733;"}</button>`
+    ).join("") + `</div>` +
+    `<div class="row" style="gap:5px;margin-top:6px">` +
+    `<input id="ed-pname" placeholder="name this look" style="flex:1;min-height:36px;` +
+    `font-size:13px;padding:0 10px;background:var(--panel2);border:1px solid var(--line);` +
+    `border-radius:8px;color:var(--ink)">` +
+    `<button class="ghost" style="width:auto;padding:8px 12px;font-size:12px"` +
+    ` onclick="edSavePreset()">Save</button></div>`;
+}
+
+async function edApplyPreset(name) {
+  if (!ED) return;
+  const r = await fetch("/api/presets/apply", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }) });
+  if (!r.ok) return;
+  const d = await r.json();
+  const L = d.look, C = d.captions;
+  edSnap();
+  ED.spec.color = { preset: L.color_preset, intensity: L.color_intensity };
+  ED.spec.audio = { preset: L.audio_preset, intensity: L.audio_intensity,
+                    volume_db: L.volume_db };
+  ED.spec.aspect = { ratio: L.aspect_ratio, pan: L.aspect_pan,
+                     panx: L.aspect_panx, zoom: L.aspect_zoom };
+  ED.spec.captions = { ...ED.spec.captions, size: C.size_wide, margin: C.margin_wide,
+                       outline: C.outline, color: C.color, x: C.x, width: C.width };
+  ACTIVE = name;
+  edTab((document.querySelector(".ed-tab.on") || {}).dataset
+        ? document.querySelector(".ed-tab.on").dataset.t : "captions");
+  edLive();
+  edAudioApply();
+  edLoadPresets();
+}
+
+async function edSavePreset() {
+  const el = document.getElementById("ed-pname");
+  const name = (el.value || "").trim();
+  if (!name) return;
+  // Save what THIS CLIP is set to, not whatever was last written globally.
+  await edApplyAll();
+  const r = await fetch("/api/presets", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }) });
+  if (!r.ok) { alert((await r.text()).slice(0, 160)); return; }
+  el.value = "";
+  ACTIVE = name;
+  edLoadPresets();
+}
+
 // ---------------------------------------------------------- undo / redo
 // A plain snapshot stack. The spec is small JSON, so storing whole copies is
 // simpler and less bug-prone than diffing, and 50 of them costs nothing.
@@ -807,6 +883,7 @@ async function edOpen() {
   document.getElementById("editor").style.display = "";
   document.getElementById("edtoggle").textContent = "Hide editor";
   edWireTimeline(); edPaintTimeline(); edTab("captions"); edScript(); edLive();
+  edLoadPresets();
   edPanLayer();
   edAudioWire(); edTick();
 }
