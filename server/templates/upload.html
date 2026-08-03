@@ -38,6 +38,14 @@
 </div>
 
 <div class="card">
+  <h2>Style defaults</h2>
+  <p class="muted">What every clip is rendered with. Set it here BEFORE a run and the
+    whole batch comes out right — otherwise you are restyling clips one at a time
+    afterwards. The editor's "Use this style for all" writes to these same settings.</p>
+  <div id="stylebox" class="muted">loading…</div>
+</div>
+
+<div class="card">
   <h2>CTA outro</h2>
   <p class="muted">A short video of you saying what you do. It gets welded onto the
     end of <b>every</b> clip, so anyone who watches one is told what you actually
@@ -166,6 +174,103 @@ $("go").addEventListener("click", async () => {
     $("stop").disabled = true;
   }
 });
+
+// --- style defaults ------------------------------------------------------
+// The same settings the editor writes. Exposed here because with an empty deck
+// there is no clip to open an editor on, so there was previously nowhere to set
+// them before the first run.
+let STYLE = null, CAPS = null;
+
+async function loadStyle() {
+  try {
+    const [lr, cr] = await Promise.all([fetch("/api/look"), fetch("/api/captions/settings")]);
+    if (!lr.ok || !cr.ok) return;
+    STYLE = await lr.json(); CAPS = await cr.json();
+  } catch (e) { return; }
+  const sel = (id, opts, cur) => `<select id="${id}" style="width:100%" onchange="saveStyle()">${
+    Object.entries(opts).map(([k, l]) =>
+      `<option value="${k}"${k === cur ? " selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
+  const RATIOS = ["original", "9:16", "4:5", "1:1", "16:9"];
+  $("stylebox").innerHTML = `
+    <div style="font-weight:700;margin-bottom:4px">Aspect ratio</div>
+    <div class="row" style="gap:5px;flex-wrap:wrap">${RATIOS.map(r =>
+      `<button class="${r === STYLE.aspect_ratio ? "" : "ghost"}" style="flex:1;min-width:62px;
+         padding:9px 0;font-size:13px" onclick="setRatio('${r}')">${r}</button>`).join("")}</div>
+    ${STYLE.aspect_ratio !== "original" ? `
+      <label style="display:block;margin-top:8px">Crop height
+        <b id="s-pan">${Math.round(STYLE.aspect_pan * 100)}%</b>
+        <input type="range" min="0" max="100" value="${Math.round(STYLE.aspect_pan * 100)}"
+          style="width:100%" oninput="document.getElementById('s-pan').textContent=this.value+'%'"
+          onchange="STYLE.aspect_pan=+this.value/100;saveStyle()"></label>
+      <div class="muted" style="font-size:12px">Captions sit low, so a centred crop
+        clips them. 62% keeps them in frame.</div>` : ""}
+
+    <div style="font-weight:700;margin:14px 0 4px">Colour</div>
+    ${sel("s-cpre", STYLE.color_presets, STYLE.color_preset)}
+    <label style="display:block;margin-top:8px">Strength <b id="s-clab">${Math.round(STYLE.color_intensity * 100)}%</b>
+      <input type="range" min="0" max="150" value="${Math.round(STYLE.color_intensity * 100)}"
+        style="width:100%" id="s-cint"
+        oninput="document.getElementById('s-clab').textContent=this.value+'%'"
+        onchange="saveStyle()"></label>
+
+    <div style="font-weight:700;margin:14px 0 4px">Voice</div>
+    ${sel("s-apre", STYLE.audio_presets, STYLE.audio_preset)}
+    <label style="display:block;margin-top:8px">Strength <b id="s-alab">${Math.round(STYLE.audio_intensity * 100)}%</b>
+      <input type="range" min="0" max="150" value="${Math.round(STYLE.audio_intensity * 100)}"
+        style="width:100%" id="s-aint"
+        oninput="document.getElementById('s-alab').textContent=this.value+'%'"
+        onchange="saveStyle()"></label>
+    <div class="muted" style="font-size:12px;margin-top:4px">Metallic or warbly? Turn
+      Voice strength <b>down</b> — that is the noise remover working too hard.</div>
+
+    <div style="font-weight:700;margin:14px 0 4px">Captions</div>
+    <label style="display:block">Size <b id="s-slab">${CAPS.size_wide}</b>
+      <input type="range" min="10" max="46" value="${CAPS.size_wide}" style="width:100%"
+        id="s-size" oninput="document.getElementById('s-slab').textContent=this.value"
+        onchange="saveStyle()"></label>
+    <label style="display:block">Height off the bottom <b id="s-mlab">${CAPS.margin_wide}</b>
+      <input type="range" min="10" max="180" value="${Math.min(CAPS.margin_wide,180)}" style="width:100%"
+        id="s-marg" oninput="document.getElementById('s-mlab').textContent=this.value"
+        onchange="saveStyle()"></label>
+    <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:6px">${
+      ["#FFFFFF","#F5A524","#3FB950","#F85149","#00E5FF","#FFD479"].map(h =>
+      `<div onclick="CAPS.color='${h}';saveStyle()" style="width:34px;height:34px;
+         border-radius:8px;flex:0 0 auto;cursor:pointer;background:${h};
+         border:2px solid ${CAPS.color === h ? "var(--accent)" : "var(--line)"}"></div>`).join("")}</div>
+    <div class="muted" style="font-size:12px;margin-top:6px">Captions are burned in when
+      you approve a clip, not during the render — so these can change any time.</div>
+    <div id="s-saved" class="muted" style="margin-top:8px"></div>`;
+}
+
+function setRatio(r) {
+  STYLE.aspect_ratio = r;
+  if (r !== "original" && STYLE.aspect_pan === 0.5) STYLE.aspect_pan = 0.62;
+  saveStyle(true);
+}
+
+async function saveStyle(repaint) {
+  const look = { ...STYLE,
+    color_preset: $("s-cpre") ? $("s-cpre").value : STYLE.color_preset,
+    color_intensity: $("s-cint") ? +$("s-cint").value / 100 : STYLE.color_intensity,
+    audio_preset: $("s-apre") ? $("s-apre").value : STYLE.audio_preset,
+    audio_intensity: $("s-aint") ? +$("s-aint").value / 100 : STYLE.audio_intensity };
+  const caps = { ...CAPS,
+    size_wide: $("s-size") ? +$("s-size").value : CAPS.size_wide,
+    margin_wide: $("s-marg") ? +$("s-marg").value : CAPS.margin_wide };
+  const [a, b] = await Promise.all([
+    fetch("/api/look", { method: "POST", headers: { "Content-Type": "application/json" },
+                         body: JSON.stringify(look) }),
+    fetch("/api/captions/settings", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(caps) }),
+  ]);
+  if (a.ok) STYLE = { ...STYLE, ...(await a.json()) };
+  if (b.ok) CAPS = await b.json();
+  if (repaint) { loadStyle(); return; }
+  const n = $("s-saved");
+  if (n) { n.innerHTML = `<span style="color:var(--ok)">Saved.</span>`;
+           setTimeout(() => { n.textContent = ""; }, 2000); }
+}
+loadStyle();
 
 // --- CTA outro -----------------------------------------------------------
 const osay = (h, c) => { $("outroout").innerHTML = `<div style="color:${c||'var(--muted)'};font-size:14px">${h}</div>`; };
